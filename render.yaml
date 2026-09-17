@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: sanggwon-mobile-app
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PUBLIC_DATA_SERVICE_KEY
+        sync: false
+      - key: PORT
+        value: 3000

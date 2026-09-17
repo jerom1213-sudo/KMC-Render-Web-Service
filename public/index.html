@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#17324d" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="상권분석" />
+<title>반경 상권분석</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" href="/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/icon.svg" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="/styles.css?v=1" />
+</head>
+<body>
+<header class="appHeader">
+  <div><span class="eyebrow">PUBLIC DATA · LOCAL ANALYTICS</span><h1>반경 상권분석</h1></div>
+  <button id="installBtn" class="ghost hidden" type="button">앱 설치</button>
+</header>
+<main>
+<section class="searchCard card">
+  <label class="wide"><span>분석 주소</span><input id="address" value="광주광역시 서구 풍암동 1074" autocomplete="street-address" /></label>
+  <label><span>반경</span><select id="radiusPreset"><option value="300">300m</option><option value="500" selected>500m</option><option value="1000">1km</option><option value="1500">1.5km</option><option value="2000">2km</option><option value="custom">직접입력</option></select></label>
+  <label id="customRadiusWrap" class="hidden"><span>반경(m)</span><input id="radius" type="number" min="50" max="2000" step="50" value="500" /></label>
+  <button id="searchBtn" class="primary" type="button">상권 조회</button>
+  <div id="status" class="status">분석 준비됨</div>
+</section>
+<section class="kpis">
+  <article class="card kpi"><span>반경 내 점포</span><strong id="total">-</strong></article>
+  <article class="card kpi"><span>업종 대분류</span><strong id="largeCount">-</strong></article>
+  <article class="card kpi"><span>최다 업종</span><strong id="topCategory" class="smallStrong">-</strong><small id="topCategoryCount">-</small></article>
+  <article class="card kpi"><span>분석 반경</span><strong id="radiusKpi">500m</strong><small id="centerName">풍암동 1074</small></article>
+</section>
+<section class="card mapCard">
+  <div class="sectionHead"><div><h2>점포 분포 지도</h2><p>업종별 색상으로 점포가 표시됨</p></div><button id="resetFilterBtn" class="textBtn">전체 업종</button></div>
+  <div id="map"></div>
+</section>
+<section class="card categoryCard">
+  <div class="sectionHead"><div><h2>업종별 점포 수</h2><p>업종을 누르면 지도와 목록이 함께 필터링됨</p></div></div>
+  <div id="categoryList" class="categoryList"></div>
+  <details><summary>업종 중분류 전체 보기</summary><div id="midCategoryList" class="categoryList compact"></div></details>
+</section>
+<section class="card storeCard">
+  <div class="sectionHead storeHead"><div><h2>점포 목록</h2><p id="storeListCaption">조회 후 점포 목록이 표시됨</p></div><button id="exportBtn" class="ghost" disabled>CSV 저장</button></div>
+  <input id="storeSearch" class="storeSearch" type="search" placeholder="상호·업종·주소 검색" disabled />
+  <div id="storeList" class="storeList"><div class="emptyCard">상권 조회 후 점포가 표시됨</div></div>
+</section>
+</main>
+<footer>데이터: 소상공인시장진흥공단 상가(상권)정보 · 지도: OpenStreetMap</footer>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/app.js?v=1"></script>
+</body>
+</html>

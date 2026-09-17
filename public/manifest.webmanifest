@@ -1,0 +1,14 @@
+{
+  "name": "반경 상권분석",
+  "short_name": "상권분석",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#17324d",
+  "lang": "ko-KR",
+  "description": "주소와 반경을 입력하여 공공데이터 기반 점포 분포와 업종 구성을 분석하는 앱",
+  "icons": [
+    {"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
