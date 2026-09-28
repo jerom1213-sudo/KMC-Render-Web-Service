@@ -188,6 +188,31 @@ async function analyze(address, radius) {
   return data;
 }
 
+async function analyzeCoord(lat, lon, radius) {
+  const cacheKey = `coord__${lat.toFixed(6)}__${lon.toFixed(6)}__${radius}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.at < CACHE_TTL) return cached.data;
+
+  const first = await getPage(lat, lon, radius, 1);
+  const pages = Math.max(1, Math.ceil(first.totalCount / 100));
+  const raw = [...first.items];
+  for (let p=2; p<=pages; p++) {
+    const next = await getPage(lat, lon, radius, p);
+    raw.push(...next.items);
+  }
+  const stores = raw.map(normalizeStore).filter(Boolean);
+  const data = {
+    query: { mode: 'coord', radius },
+    center: { lat, lon, displayName: '다각형 검색 중심점' },
+    total: stores.length,
+    countsLarge: countBy(stores, 'largeCategory'),
+    countsMid: countBy(stores, 'midCategory'),
+    stores
+  };
+  cache.set(cacheKey, { at: Date.now(), data });
+  return data;
+}
+
 function mapError(err) {
   const msg = String(err?.message || err || 'UNKNOWN');
   const [code, ...rest] = msg.split('|');
@@ -220,7 +245,37 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return res.end();
   }
   if (url.pathname === '/api/health') {
-    return json(res, 200, { ok: true, version: 'mobile-1.0', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+    return json(res, 200, { ok: true, version: 'web-2.0', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+  }
+  if (url.pathname === '/api/geocode') {
+    const address = String(url.searchParams.get('address') || '').trim();
+    if (!address) return json(res, 400, { code:'ADDRESS_REQUIRED', error:'주소를 입력해야 함' });
+    try {
+      const point = await geocode(address);
+      return json(res, 200, point);
+    } catch (e) {
+      const mapped = mapError(e);
+      return json(res, 502, mapped);
+    }
+  }
+  if (url.pathname === '/api/stores-coord') {
+    const lat = Number(url.searchParams.get('lat'));
+    const lon = Number(url.searchParams.get('lon'));
+    const radius = Number(url.searchParams.get('radius') || 500);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) {
+      return json(res, 400, { code:'COORD_INVALID', error:'위도·경도 값이 올바르지 않음' });
+    }
+    if (!Number.isFinite(radius) || radius < 50 || radius > 2000) {
+      return json(res, 400, { code:'RADIUS_INVALID', error:'반경은 50~2000m 범위여야 함' });
+    }
+    try {
+      const data = await analyzeCoord(lat, lon, Math.round(radius));
+      return json(res, 200, data);
+    } catch (e) {
+      const mapped = mapError(e);
+      const status = mapped.code === 'PUBLIC_DATA_FORBIDDEN' ? 403 : (mapped.code === 'SERVICE_KEY_MISSING' ? 503 : 502);
+      return json(res, status, mapped);
+    }
   }
   if (url.pathname === '/api/stores') {
     const address = String(url.searchParams.get('address') || '').trim();
@@ -240,6 +295,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Sanggwon Mobile App running on port ${PORT}`);
+  console.log(`Sanggwon Web App running on port ${PORT}`);
   console.log(`API key configured: ${Boolean(SERVICE_KEY_RAW)}`);
 });
