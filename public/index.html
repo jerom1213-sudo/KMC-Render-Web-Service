@@ -7,32 +7,46 @@
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 <meta name="apple-mobile-web-app-title" content="상권분석" />
-<title>반경 상권분석</title>
+<title>상권분석</title>
 <link rel="manifest" href="/manifest.webmanifest" />
 <link rel="icon" href="/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="/icon.svg" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
 <link rel="stylesheet" href="/styles.css?v=1" />
 </head>
 <body>
 <header class="appHeader">
-  <div><span class="eyebrow">PUBLIC DATA · LOCAL ANALYTICS</span><h1>반경 상권분석</h1></div>
+  <div><span class="eyebrow">PUBLIC DATA · LOCAL ANALYTICS</span><h1>상권분석</h1></div>
   <button id="installBtn" class="ghost hidden" type="button">앱 설치</button>
 </header>
 <main>
 <section class="searchCard card">
+  <div class="modeSwitch wide" role="group" aria-label="분석 방식">
+    <button id="radiusModeBtn" class="modeBtn active" type="button">반경 분석</button>
+    <button id="polygonModeBtn" class="modeBtn" type="button">다각형 분석</button>
+  </div>
   <label class="wide"><span>분석 주소</span><input id="address" value="광주광역시 서구 풍암동 1074" autocomplete="street-address" /></label>
-  <label><span>반경</span><select id="radiusPreset"><option value="300">300m</option><option value="500" selected>500m</option><option value="1000">1km</option><option value="1500">1.5km</option><option value="2000">2km</option><option value="custom">직접입력</option></select></label>
-  <label id="customRadiusWrap" class="hidden"><span>반경(m)</span><input id="radius" type="number" min="50" max="2000" step="50" value="500" /></label>
-  <button id="searchBtn" class="primary" type="button">상권 조회</button>
+  <div id="radiusControls" class="modeControls">
+    <label><span>반경</span><select id="radiusPreset"><option value="300">300m</option><option value="500" selected>500m</option><option value="1000">1km</option><option value="1500">1.5km</option><option value="2000">2km</option><option value="custom">직접입력</option></select></label>
+    <label id="customRadiusWrap" class="hidden"><span>반경(m)</span><input id="radius" type="number" min="50" max="2000" step="50" value="500" /></label>
+    <button id="searchBtn" class="primary" type="button">상권 조회</button>
+  </div>
+  <div id="polygonControls" class="modeControls hidden">
+    <button id="locateBtn" class="ghost" type="button">주소로 지도 이동</button>
+    <button id="drawPolygonBtn" class="primary" type="button">다각형 그리기</button>
+    <button id="clearPolygonBtn" class="ghost" type="button">다각형 지우기</button>
+    <button id="polygonSearchBtn" class="primary" type="button" disabled>다각형 상권 조회</button>
+  </div>
+  <div id="polygonHelp" class="polygonHelp hidden">① 주소로 이동 → ② 다각형 그리기 → ③ 지도에서 3개 이상 꼭짓점을 선택 → ④ 다각형 상권 조회 순서로 진행함</div>
   <div id="status" class="status">분석 준비됨</div>
 </section>
 <section class="kpis">
-  <article class="card kpi"><span>반경 내 점포</span><strong id="total">-</strong></article>
+  <article class="card kpi"><span id="totalLabel">반경 내 점포</span><strong id="total">-</strong></article>
   <article class="card kpi"><span>업종 대분류</span><strong id="largeCount">-</strong></article>
   <article class="card kpi"><span>최다 업종</span><strong id="topCategory" class="smallStrong">-</strong><small id="topCategoryCount">-</small></article>
-  <article class="card kpi"><span>분석 반경</span><strong id="radiusKpi">500m</strong><small id="centerName">풍암동 1074</small></article>
+  <article class="card kpi"><span id="areaLabel">분석 반경</span><strong id="radiusKpi">500m</strong><small id="centerName">풍암동 1074</small></article>
 </section>
 <section class="card mapCard">
   <div class="sectionHead"><div><h2>점포 분포 지도</h2><p>업종별 색상으로 점포가 표시됨</p></div><button id="resetFilterBtn" class="textBtn">전체 업종</button></div>
@@ -53,6 +67,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
-<script src="/app.js?v=2"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script src="/app.js?v=3"></script>
 </body>
 </html>
