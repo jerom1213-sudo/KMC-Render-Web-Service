@@ -1,7 +1,21 @@
 const COLORS=['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e','#d35400','#16a085','#8e44ad','#27ae60','#c0392b','#2980b9','#7f8c8d','#2c3e50'];
 const DEFAULT_CENTER=[35.12339,126.8829774];
 const map=L.map('map',{preferCanvas:true,zoomControl:true}).setView(DEFAULT_CENTER,15);
-L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty'}).addTo(map);
+async function addKoreanBasemap(){
+  try{
+    const style=await fetch('https://tiles.openfreemap.org/styles/liberty').then(r=>r.json());
+    for(const layer of (style.layers||[])){
+      if(layer.type!=='symbol'||!layer.layout||!layer.layout['text-field']) continue;
+      const raw=JSON.stringify(layer.layout['text-field']);
+      if(!/name/.test(raw)) continue;
+      layer.layout['text-field']=['coalesce',['get','name:ko'],['get','name'],layer.layout['text-field']];
+    }
+    L.maplibreGL({style}).addTo(map);
+  }catch(e){
+    L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty'}).addTo(map);
+  }
+}
+addKoreanBasemap();
 
 let analysisMode='radius',currentData=null,activeCategory=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={};
 const storeLayer=L.layerGroup().addTo(map),markers=[],drawnItems=new L.FeatureGroup().addTo(map);
@@ -44,5 +58,5 @@ el.radiusPreset.addEventListener('change',()=>{const c=el.radiusPreset.value==='
 el.radiusModeBtn.addEventListener('click',()=>setMode('radius'));el.polygonModeBtn.addEventListener('click',()=>setMode('polygon'));
 el.searchBtn.addEventListener('click',radiusSearch);el.locateBtn.addEventListener('click',locateAddress);el.drawPolygonBtn.addEventListener('click',startPolygonDraw);el.clearPolygonBtn.addEventListener('click',clearPolygon);el.polygonSearchBtn.addEventListener('click',polygonSearch);
 el.resetFilterBtn.addEventListener('click',()=>{activeCategory=null;el.storeSearch.value='';applyFilters();if(currentData)renderCounts(el.categoryList,currentData.countsLarge,true)});el.storeSearch.addEventListener('input',applyFilters);el.exportBtn.addEventListener('click',exportCsv);el.address.addEventListener('keydown',e=>{if(e.key==='Enter'){analysisMode==='radius'?radiusSearch():locateAddress()}});
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=3').catch(()=>{});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=4').catch(()=>{});
 radiusSearch();
