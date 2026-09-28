@@ -52,6 +52,23 @@
   <div class="sectionHead"><div><h2>점포 분포 지도</h2><p>업종별 색상으로 점포가 표시됨</p></div><button id="resetFilterBtn" class="textBtn">전체 업종</button></div>
   <div id="map"></div>
 </section>
+<section class="card densityCard">
+  <div class="sectionHead densityHead">
+    <div><h2>상권 밀집도</h2><p>붉은색이 진할수록 점포 밀집도가 높음</p></div>
+    <label class="densitySelectWrap"><span>밀집도 업종</span><select id="densityCategory"><option value="">전체 업종</option></select></label>
+  </div>
+  <div class="densityBody">
+    <div class="densityStats">
+      <div class="densityTableTitle">점포 밀도</div>
+      <div class="densityStatRow"><span>면적(ha)</span><strong id="densityArea">-</strong></div>
+      <div class="densityStatRow"><span>전체 점포밀도</span><strong id="densityAll">-</strong><small>개/ha</small></div>
+      <div class="densityStatRow"><span id="densitySelectedLabel">선택 업종 점포밀도</span><strong id="densitySelected">-</strong><small>개/ha</small></div>
+      <div class="densityNote">※ 밀도 = 분석구역 내 점포 수 ÷ 분석구역 면적(ha)</div>
+      <div class="densityScale"><span>높음</span><i></i><span>낮음</span></div>
+    </div>
+    <div id="densityMap"></div>
+  </div>
+</section>
 <section class="card categoryCard">
   <div class="sectionHead"><div><h2>업종별 점포 수</h2><p>업종을 누르면 지도와 목록이 함께 필터링됨</p></div></div>
   <div id="categoryList" class="categoryList"></div>
@@ -68,6 +85,7 @@
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
-<script src="/app.js?v=5"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="/app.js?v=6"></script>
 </body>
 </html>
