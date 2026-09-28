@@ -19,7 +19,7 @@ addKoreanBasemap();
 
 const densityMap=L.map('densityMap',{preferCanvas:true,zoomControl:true,attributionControl:true}).setView(DEFAULT_CENTER,15);
 L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty'}).addTo(densityMap);
-let densityHeatLayer=null,densityBoundaryLayer=null;
+let densityGridLayer=null,densityBoundaryLayer=null;
 
 let analysisMode='radius',currentData=null,activeCategory=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={};
 const storeLayer=L.layerGroup().addTo(map),markers=[],drawnItems=new L.FeatureGroup().addTo(map);
@@ -36,6 +36,77 @@ function haversine(a,b){const R=6371000,toRad=x=>x*Math.PI/180,dLat=toRad(b.lat-
 function polygonAreaMeters(points){if(points.length<3)return 0;const lat0=points.reduce((s,p)=>s+p.lat,0)/points.length*Math.PI/180,R=6371000;const xy=points.map(p=>({x:R*p.lng*Math.PI/180*Math.cos(lat0),y:R*p.lat*Math.PI/180}));let a=0;for(let i=0,j=xy.length-1;i<xy.length;j=i++)a+=(xy[j].x*xy[i].y-xy[i].x*xy[j].y);return Math.abs(a/2)}
 function pointInPolygon(lat,lon,poly){let inside=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const xi=poly[i].lng,yi=poly[i].lat,xj=poly[j].lng,yj=poly[j].lat;const intersect=((yi>lat)!==(yj>lat))&&(lon<(xj-xi)*(lat-yi)/(yj-yi+Number.EPSILON)+xi);if(intersect)inside=!inside}return inside}
 function polygonCenter(poly){return{lat:poly.reduce((s,p)=>s+p.lat,0)/poly.length,lon:poly.reduce((s,p)=>s+p.lng,0)/poly.length}}
+function metersToLat(m){return m/111320}
+function metersToLon(m,lat){const cos=Math.cos(lat*Math.PI/180);return m/(111320*(Math.abs(cos)<0.01?0.01:cos))}
+function densityCellSizeMeters(){
+  if(!currentData)return 60;
+  if(currentData.query?.mode==='polygon')return 50;
+  const r=Number(currentData.query?.radius||500);
+  if(r<=300)return 30;
+  if(r<=500)return 40;
+  if(r<=1000)return 55;
+  if(r<=1500)return 65;
+  return 80;
+}
+function getDensityBounds(){
+  if(currentData?.query?.mode==='polygon'&&polygonLayer)return polygonLayer.getBounds();
+  if(currentData?.center&&currentData?.query?.radius){
+    return L.circle([currentData.center.lat,currentData.center.lon],{radius:Number(currentData.query.radius)}).getBounds();
+  }
+  if(currentData?.stores?.length)return L.latLngBounds(currentData.stores.map(s=>[s.lat,s.lon]));
+  return null;
+}
+function pointInsideDensityArea(lat,lon){
+  if(currentData?.query?.mode==='polygon'&&polygonLayer){
+    const poly=polygonLayer.getLatLngs()[0];
+    return pointInPolygon(lat,lon,poly);
+  }
+  if(currentData?.center&&currentData?.query?.radius){
+    return haversine({lat,lon},{lat:currentData.center.lat,lon:currentData.center.lon})<=Number(currentData.query.radius||0);
+  }
+  return true;
+}
+function buildDensityGrid(stores){
+  const bounds=getDensityBounds();
+  if(!bounds)return[];
+  const south=bounds.getSouth(),north=bounds.getNorth(),west=bounds.getWest(),east=bounds.getEast();
+  const centerLat=(south+north)/2;
+  const cellMeters=densityCellSizeMeters();
+  const latStep=metersToLat(cellMeters),lonStep=metersToLon(cellMeters,centerLat);
+  const rows=Math.max(1,Math.ceil((north-south)/latStep));
+  const cols=Math.max(1,Math.ceil((east-west)/lonStep));
+  const counts=new Map();
+  for(const s of stores){
+    if(!pointInsideDensityArea(s.lat,s.lon))continue;
+    const row=Math.max(0,Math.min(rows-1,Math.floor((s.lat-south)/latStep)));
+    const col=Math.max(0,Math.min(cols-1,Math.floor((s.lon-west)/lonStep)));
+    const key=row+'_'+col;
+    counts.set(key,(counts.get(key)||0)+1);
+  }
+  const cells=[];
+  for(let row=0;row<rows;row++){
+    for(let col=0;col<cols;col++){
+      const cSouth=south+row*latStep,cNorth=Math.min(north,cSouth+latStep);
+      const cWest=west+col*lonStep,cEast=Math.min(east,cWest+lonStep);
+      const midLat=(cSouth+cNorth)/2,midLon=(cWest+cEast)/2;
+      if(!pointInsideDensityArea(midLat,midLon))continue;
+      cells.push({count:counts.get(row+'_'+col)||0,bounds:[[cSouth,cWest],[cNorth,cEast]]});
+    }
+  }
+  return cells;
+}
+const DENSITY_COLORS=['#fff5f0','#fee0d2','#fcbba1','#fc9272','#fb6a4a','#cb181d','#99000d'];
+function densityStepIndex(value,max){
+  if(value<=0||max<=0)return 0;
+  const ratio=value/max;
+  if(ratio<=0.16)return 1;
+  if(ratio<=0.32)return 2;
+  if(ratio<=0.48)return 3;
+  if(ratio<=0.64)return 4;
+  if(ratio<=0.82)return 5;
+  return 6;
+}
+function densityStepColor(value,max){return DENSITY_COLORS[densityStepIndex(value,max)]}
 function analysisAreaHa(){
   if(!currentData)return 0;
   if(currentData.query?.mode==='polygon'&&polygonLayer){
@@ -56,18 +127,35 @@ function renderDensity(){
   const areaHa=analysisAreaHa();
   const selected=el.densityCategory?.value||'';
   const rows=selected?currentData.stores.filter(s=>s.largeCategory===selected):currentData.stores;
+
   el.densityArea.textContent=areaHa>0?areaHa.toLocaleString('ko-KR',{maximumFractionDigits:2}):'-';
   el.densityAll.textContent=areaHa>0?(currentData.total/areaHa).toLocaleString('ko-KR',{maximumFractionDigits:2}):'-';
   el.densitySelected.textContent=areaHa>0?(rows.length/areaHa).toLocaleString('ko-KR',{maximumFractionDigits:2}):'-';
   el.densitySelectedLabel.textContent=selected?`${selected} 점포밀도`:'전체 업종 점포밀도';
 
-  if(densityHeatLayer){densityMap.removeLayer(densityHeatLayer);densityHeatLayer=null}
+  if(densityGridLayer){densityMap.removeLayer(densityGridLayer);densityGridLayer=null}
   if(densityBoundaryLayer){densityMap.removeLayer(densityBoundaryLayer);densityBoundaryLayer=null}
-  const pts=rows.map(s=>[s.lat,s.lon,1]);
-  if(pts.length){
-    const rr=currentData.query?.mode==='polygon'?28:Math.max(18,Math.min(35,Number(currentData.query?.radius||500)/20));
-    densityHeatLayer=L.heatLayer(pts,{radius:rr,blur:22,maxZoom:18,minOpacity:.22,gradient:{0.2:'#fee5d9',0.4:'#fcae91',0.6:'#fb6a4a',0.8:'#de2d26',1:'#a50f15'}}).addTo(densityMap);
+
+  const cells=buildDensityGrid(rows);
+  const maxCount=Math.max(0,...cells.map(x=>x.count));
+  densityGridLayer=L.layerGroup();
+
+  for(const cell of cells){
+    const step=densityStepIndex(cell.count,maxCount);
+    const rect=L.rectangle(cell.bounds,{
+      color:step===0?'#ffffff':'rgba(255,255,255,.78)',
+      weight:step===0?0.15:0.45,
+      opacity:0.75,
+      fillColor:densityStepColor(cell.count,maxCount),
+      fillOpacity:step===0?0.12:0.72
+    });
+    if(cell.count>0){
+      rect.bindTooltip(`밀집도 ${step}단계 · 점포 ${cell.count.toLocaleString()}개`,{sticky:true,direction:'top'});
+    }
+    rect.addTo(densityGridLayer);
   }
+  densityGridLayer.addTo(densityMap);
+
   if(currentData.query?.mode==='polygon'&&polygonLayer){
     const poly=polygonLayer.getLatLngs()[0];
     densityBoundaryLayer=L.polygon(poly,{color:'#17324d',weight:3,fill:false,dashArray:'6 4'}).addTo(densityMap);
@@ -107,5 +195,5 @@ el.radiusModeBtn.addEventListener('click',()=>setMode('radius'));el.polygonModeB
 el.searchBtn.addEventListener('click',radiusSearch);el.locateBtn.addEventListener('click',locateAddress);el.drawPolygonBtn.addEventListener('click',startPolygonDraw);el.clearPolygonBtn.addEventListener('click',clearPolygon);el.polygonSearchBtn.addEventListener('click',polygonSearch);
 el.resetFilterBtn.addEventListener('click',()=>{activeCategory=null;el.storeSearch.value='';applyFilters();if(currentData)renderCounts(el.categoryList,currentData.countsLarge,true)});el.storeSearch.addEventListener('input',applyFilters);el.exportBtn.addEventListener('click',exportCsv);el.address.addEventListener('keydown',e=>{if(e.key==='Enter'){analysisMode==='radius'?radiusSearch():locateAddress()}});
 el.densityCategory.addEventListener('change',renderDensity);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=6').catch(()=>{});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=7').catch(()=>{});
 radiusSearch();
