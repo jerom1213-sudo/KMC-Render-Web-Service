@@ -45,33 +45,149 @@ function safeServiceKey() {
   }
 }
 
+async function nominatimSearch(q, limit=5) {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('q', q);
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('countrycodes', 'kr');
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('accept-language', 'ko');
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Sanggwon-Web-Analyzer/2.1 (+https://sanggwon-mobile-api.onrender.com)',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.5'
+      }
+    });
+    if (!r.ok) return [];
+    const arr = await r.json();
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeKoreanAddressText(v) {
+  return String(v || '')
+    .replace(/^대한민국\s*/, '')
+    .replace(/\s+/g, ' ')
+    .replace(/번지/g, '')
+    .trim();
+}
+
+function buildExpandedAddressFromLocality(original, localityResult, localityToken) {
+  const a = localityResult?.address || {};
+  const remainder = original.replace(localityToken, '').trim();
+
+  const parts = [
+    remainder,
+    localityToken,
+    a.city_district,
+    a.county,
+    a.city,
+    a.state_district,
+    a.state,
+    '대한민국'
+  ].map(x => String(x || '').trim()).filter(Boolean);
+
+  return [...new Set(parts)].join(', ');
+}
+
 async function geocode(address) {
-  const normalized = String(address || '').trim();
+  const normalized = normalizeKoreanAddressText(address);
   if (!normalized) throw new Error('ADDRESS_REQUIRED');
+
   // Known default point retained for reliable demo/search start.
   if (/풍암/.test(normalized) && /1074/.test(normalized)) {
-    return { lat: 35.12339, lon: 126.8829774, displayName: normalized };
+    return { lat: 35.12339, lon: 126.8829774, displayName: '광주광역시 서구 풍암동 1074', resolvedQuery: normalized };
   }
-  const variants = [...new Set([
+
+  const directVariants = [...new Set([
     normalized,
-    normalized.replace(/번지/g, '').trim(),
-    normalized.replace(/^대한민국\s*/, '').trim()
+    `${normalized}, 대한민국`,
+    normalized.replace(/\s+(\d+(?:-\d+)?)$/, ' $1'),
+    `대한민국 ${normalized}`
   ])].filter(Boolean);
-  for (const q of variants) {
-    const url = new URL('https://nominatim.openstreetmap.org/search');
-    url.searchParams.set('q', q);
-    url.searchParams.set('format', 'jsonv2');
-    url.searchParams.set('limit', '1');
-    url.searchParams.set('countrycodes', 'kr');
-    try {
-      const r = await fetch(url, { headers: { 'User-Agent': 'Sanggwon-Mobile-Analyzer/1.0' } });
-      if (!r.ok) continue;
-      const arr = await r.json();
-      if (Array.isArray(arr) && arr[0]) {
-        return { lat: Number(arr[0].lat), lon: Number(arr[0].lon), displayName: arr[0].display_name || q };
-      }
-    } catch {}
+
+  // 1. Direct search first.
+  for (const q of directVariants) {
+    const arr = await nominatimSearch(q, 5);
+    if (arr[0]) {
+      return {
+        lat: Number(arr[0].lat),
+        lon: Number(arr[0].lon),
+        displayName: arr[0].display_name || q,
+        resolvedQuery: q
+      };
+    }
   }
+
+  // 2. If the address is abbreviated, resolve the 읍/면/동/리 first,
+  //    then rebuild the road address with its upper administrative areas.
+  const tokens = normalized.split(' ');
+  const localityToken = tokens.find(t => /(읍|면|동|리)$/.test(t));
+  if (localityToken) {
+    const localityQueries = [
+      `${localityToken}, 대한민국`,
+      localityToken
+    ];
+
+    for (const lq of localityQueries) {
+      const localities = await nominatimSearch(lq, 10);
+      for (const loc of localities) {
+        const expanded = buildExpandedAddressFromLocality(normalized, loc, localityToken);
+        const candidates = [
+          expanded,
+          expanded.replace(/, 대한민국$/, ''),
+          `${normalized}, ${loc.display_name || ''}`
+        ].filter(Boolean);
+
+        for (const q of [...new Set(candidates)]) {
+          const arr = await nominatimSearch(q, 5);
+          if (arr[0]) {
+            return {
+              lat: Number(arr[0].lat),
+              lon: Number(arr[0].lon),
+              displayName: arr[0].display_name || q,
+              resolvedQuery: q
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Road + building number fallback:
+  //    search locality, then search the road phrase inside that locality context.
+  const roadMatch = normalized.match(/(.+?(?:로|길|대로))\s*(\d+(?:-\d+)?)/);
+  if (roadMatch && localityToken) {
+    const roadPart = `${roadMatch[1].trim()} ${roadMatch[2]}`;
+    const localities = await nominatimSearch(`${localityToken}, 대한민국`, 10);
+
+    for (const loc of localities) {
+      const a = loc.address || {};
+      const context = [
+        localityToken,
+        a.county,
+        a.city,
+        a.state,
+        '대한민국'
+      ].filter(Boolean).join(', ');
+
+      const q = `${roadPart}, ${context}`;
+      const arr = await nominatimSearch(q, 5);
+      if (arr[0]) {
+        return {
+          lat: Number(arr[0].lat),
+          lon: Number(arr[0].lon),
+          displayName: arr[0].display_name || q,
+          resolvedQuery: q
+        };
+      }
+    }
+  }
+
   throw new Error('ADDRESS_GEOCODING_FAILED');
 }
 
@@ -245,7 +361,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return res.end();
   }
   if (url.pathname === '/api/health') {
-    return json(res, 200, { ok: true, version: 'web-2.0', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+    return json(res, 200, { ok: true, version: 'web-2.1', keyConfigured: Boolean(SERVICE_KEY_RAW) });
   }
   if (url.pathname === '/api/geocode') {
     const address = String(url.searchParams.get('address') || '').trim();
