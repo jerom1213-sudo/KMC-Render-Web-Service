@@ -70,7 +70,13 @@
   </div>
 </section>
 <section class="card categoryCard">
-  <div class="sectionHead"><div><h2>업종별 점포 수</h2><p>업종을 누르면 지도와 목록이 함께 필터링됨</p></div></div>
+  <div class="sectionHead"><div><h2>업종별 점포 수</h2><p>대분류·중분류를 선택하거나 업종을 눌러 지도와 목록을 함께 필터링할 수 있음</p></div></div>
+  <div class="industryFilters">
+    <label><span>업종 대분류</span><select id="largeCategorySelect"><option value="">전체 대분류</option></select></label>
+    <label><span>업종 중분류</span><select id="midCategorySelect" disabled><option value="">전체 중분류</option></select></label>
+    <button id="clearIndustryFilterBtn" class="ghost" type="button">업종 선택 해제</button>
+  </div>
+  <div id="industryFilterStatus" class="industryFilterStatus">전체 업종 표시 중</div>
   <div id="categoryList" class="categoryList"></div>
   <details><summary>업종 중분류 전체 보기</summary><div id="midCategoryList" class="categoryList compact"></div></details>
 </section>
@@ -86,6 +92,6 @@
 <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
 <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-<script src="/app.js?v=7"></script>
+<script src="/app.js?v=8"></script>
 </body>
 </html>
