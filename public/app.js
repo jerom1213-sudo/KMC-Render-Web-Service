@@ -23,7 +23,7 @@ let densityGridLayer=null,densityBoundaryLayer=null;
 
 let analysisMode='radius',currentData=null,activeCategory=null,activeMidCategory=null,activeSmallCategory=null,selectedAddressPoint=null,locationPickMode=false,mapPickMarker=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={};
 const storeLayer=L.layerGroup().addTo(map),markers=[],drawnItems=new L.FeatureGroup().addTo(map);
-const ids=['address','radiusPreset','radius','customRadiusWrap','searchBtn','exportBtn','installBtn','status','total','totalLabel','largeCount','topCategory','topCategoryCount','radiusKpi','areaLabel','centerName','categoryList','midCategoryList','resetFilterBtn','storeSearch','storeList','storeListCaption','radiusModeBtn','polygonModeBtn','radiusControls','polygonControls','polygonHelp','locateBtn','drawPolygonBtn','clearPolygonBtn','polygonSearchBtn','densityCategory','densityArea','densityAll','densitySelected','densitySelectedLabel','largeCategorySelect','midCategorySelect','smallCategorySelect','clearIndustryFilterBtn','industryFilterStatus','addressSearchBtn','mapPointBtn','addressSuggestions','selectedAddressInfo'];
+const ids=['address','radiusPreset','radius','customRadiusWrap','searchBtn','exportBtn','installBtn','status','total','totalLabel','largeCount','topCategory','topCategoryCount','radiusKpi','areaLabel','centerName','categoryList','midCategoryList','resetFilterBtn','storeSearch','storeList','storeListCaption','radiusModeBtn','polygonModeBtn','radiusControls','polygonControls','polygonHelp','locateBtn','drawPolygonBtn','clearPolygonBtn','polygonSearchBtn','densityCategory','densityArea','densityAll','densitySelected','densitySelectedLabel','largeCategorySelect','midCategorySelect','smallCategorySelect','clearIndustryFilterBtn','industryFilterStatus','addressSearchBtn','mapPointBtn','addressSuggestions','selectedAddressInfo','industryQuickSearch','industryQuickResults'];
 const el=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
 const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const radius=()=>el.radiusPreset.value==='custom'?Number(el.radius.value):Number(el.radiusPreset.value);
@@ -113,7 +113,13 @@ async function finishMapPointSelection(lat,lon){
   setSelectedAddressPoint({lat,lon,displayName},'지도 위치 선택');
   status('지도에서 분석 중심점을 선택했음','success');
 }
-function categoryValue(v){return String(v??'').trim()}
+function categoryValue(v){
+  return String(v??'')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g,'')
+    .replace(/\s+/g,' ')
+    .trim();
+}
 function countBy(stores,prop){const m=new Map();for(const s of stores){const n=categoryValue(s[prop])||'기타';m.set(n,(m.get(n)||0)+1)}return[...m].map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'ko'))}
 function haversine(a,b){const R=6371000,toRad=x=>x*Math.PI/180,dLat=toRad(b.lat-a.lat),dLon=toRad(b.lon-a.lon),la1=toRad(a.lat),la2=toRad(b.lat);const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
 function polygonAreaMeters(points){if(points.length<3)return 0;const lat0=points.reduce((s,p)=>s+p.lat,0)/points.length*Math.PI/180,R=6371000;const xy=points.map(p=>({x:R*p.lng*Math.PI/180*Math.cos(lat0),y:R*p.lat*Math.PI/180}));let a=0;for(let i=0,j=xy.length-1;i<xy.length;j=i++)a+=(xy[j].x*xy[i].y-xy[i].x*xy[j].y);return Math.abs(a/2)}
@@ -205,7 +211,7 @@ function analysisAreaHa(){
 function populateDensityCategories(){
   if(!el.densityCategory||!currentData)return;
   const prev=el.densityCategory.value;
-  el.densityCategory.innerHTML='<option value="">전체 업종</option>'+currentData.countsLarge.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} (${x.count.toLocaleString()}개)</option>`).join('');
+  el.densityCategory.innerHTML='<option value="">전체 업종</option>'+currentData.countsLarge.map(x=>{const n=categoryValue(x.name);return `<option value="${esc(n)}">${esc(n)} (${x.count.toLocaleString()}개)</option>`}).join('');
   if([...el.densityCategory.options].some(o=>o.value===prev))el.densityCategory.value=prev;
 }
 function renderDensity(){
@@ -270,7 +276,7 @@ function refreshMidCategoryOptions(preferred=''){
   const large=el.largeCategorySelect?.value||activeCategory||'';
   const base=large?currentData.stores.filter(s=>categoryValue(s.largeCategory)===categoryValue(large)):[];
   const counts=countBy(base,'midCategory');
-  el.midCategorySelect.innerHTML='<option value="">전체 중분류</option>'+counts.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} (${x.count.toLocaleString()}개)</option>`).join('');
+  el.midCategorySelect.innerHTML='<option value="">전체 중분류</option>'+counts.map(x=>{const n=categoryValue(x.name);return `<option value="${esc(n)}">${esc(n)} (${x.count.toLocaleString()}개)</option>`}).join('');
   el.midCategorySelect.disabled=!large;
   if(large&&preferred&&[...el.midCategorySelect.options].some(o=>o.value===preferred))el.midCategorySelect.value=preferred;
   else el.midCategorySelect.value='';
@@ -285,6 +291,47 @@ function refreshSmallCategoryOptions(preferred=''){
   el.smallCategorySelect.disabled=!(large&&mid);
   if(large&&mid&&preferred&&[...el.smallCategorySelect.options].some(o=>o.value===preferred))el.smallCategorySelect.value=preferred;
   else el.smallCategorySelect.value='';
+}
+function industrySearchRows(term){
+  if(!currentData)return[];
+  const q=categoryValue(term).toLowerCase();
+  if(!q)return[];
+  const paths=new Map();
+  for(const s of currentData.stores||[]){
+    const large=categoryValue(s.largeCategory);
+    const mid=categoryValue(s.midCategory);
+    const small=categoryValue(s.smallCategory);
+    const hay=[large,mid,small].join(' > ').toLowerCase();
+    if(!hay.includes(q))continue;
+    const key=[large,mid,small].join('|');
+    if(!paths.has(key))paths.set(key,{large,mid,small,count:0});
+    paths.get(key).count++;
+  }
+  return [...paths.values()].sort((a,b)=>b.count-a.count||a.mid.localeCompare(b.mid,'ko')).slice(0,50);
+}
+function renderIndustryQuickResults(term){
+  if(!el.industryQuickResults)return;
+  const rows=industrySearchRows(term);
+  if(!categoryValue(term)){
+    el.industryQuickResults.classList.add('hidden');
+    el.industryQuickResults.innerHTML='';
+    return;
+  }
+  if(!rows.length){
+    el.industryQuickResults.innerHTML='<div class="emptyCard">해당 업종명을 찾지 못함</div>';
+    el.industryQuickResults.classList.remove('hidden');
+    return;
+  }
+  el.industryQuickResults.innerHTML=rows.map((r,i)=>`<button type="button" class="industryQuickResult" data-index="${i}"><strong>${esc([r.large,r.mid,r.small].filter(Boolean).join(' > '))}</strong><small>${r.count.toLocaleString()}개 점포</small></button>`).join('');
+  el.industryQuickResults.classList.remove('hidden');
+  el.industryQuickResults.querySelectorAll('[data-index]').forEach(b=>b.addEventListener('click',()=>{
+    const r=rows[Number(b.dataset.index)];
+    applyIndustrySelection(r.large,r.mid,r.small);
+    el.industryQuickResults.classList.add('hidden');
+    el.industryQuickSearch.value=[r.large,r.mid,r.small].filter(Boolean).join(' > ');
+    status(`${r.count.toLocaleString()}개 업종 점포 선택 완료`,'success');
+    document.getElementById('map').scrollIntoView({behavior:'smooth',block:'center'});
+  }));
 }
 function updateIndustryFilterStatus(){
   if(!el.industryFilterStatus)return;
@@ -500,6 +547,8 @@ el.address.addEventListener('keydown',e=>{
     searchAddressCandidates();
   }
 });
+el.industryQuickSearch.addEventListener('input',()=>renderIndustryQuickResults(el.industryQuickSearch.value));
+el.industryQuickSearch.addEventListener('keydown',e=>{if(e.key==='Escape'){el.industryQuickResults.classList.add('hidden')}});
 el.largeCategorySelect.addEventListener('change',()=>{
   const large=el.largeCategorySelect.value;
   applyIndustrySelection(large,'','');
@@ -517,5 +566,5 @@ el.smallCategorySelect.addEventListener('change',()=>{
 });
 el.clearIndustryFilterBtn.addEventListener('click',()=>applyIndustrySelection('','',''));
 el.densityCategory.addEventListener('change',renderDensity);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=14').catch(()=>{});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=15').catch(()=>{});
 radiusSearch();
