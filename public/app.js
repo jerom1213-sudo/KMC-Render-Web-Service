@@ -113,7 +113,8 @@ async function finishMapPointSelection(lat,lon){
   setSelectedAddressPoint({lat,lon,displayName},'지도 위치 선택');
   status('지도에서 분석 중심점을 선택했음','success');
 }
-function countBy(stores,prop){const m=new Map();for(const s of stores){const n=String(s[prop]||'기타').trim()||'기타';m.set(n,(m.get(n)||0)+1)}return[...m].map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'ko'))}
+function categoryValue(v){return String(v??'').trim()}
+function countBy(stores,prop){const m=new Map();for(const s of stores){const n=categoryValue(s[prop])||'기타';m.set(n,(m.get(n)||0)+1)}return[...m].map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'ko'))}
 function haversine(a,b){const R=6371000,toRad=x=>x*Math.PI/180,dLat=toRad(b.lat-a.lat),dLon=toRad(b.lon-a.lon),la1=toRad(a.lat),la2=toRad(b.lat);const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
 function polygonAreaMeters(points){if(points.length<3)return 0;const lat0=points.reduce((s,p)=>s+p.lat,0)/points.length*Math.PI/180,R=6371000;const xy=points.map(p=>({x:R*p.lng*Math.PI/180*Math.cos(lat0),y:R*p.lat*Math.PI/180}));let a=0;for(let i=0,j=xy.length-1;i<xy.length;j=i++)a+=(xy[j].x*xy[i].y-xy[i].x*xy[j].y);return Math.abs(a/2)}
 function pointInPolygon(lat,lon,poly){let inside=false;for(let i=0,j=poly.length-1;i<poly.length;j=i++){const xi=poly[i].lng,yi=poly[i].lat,xj=poly[j].lng,yj=poly[j].lat;const intersect=((yi>lat)!==(yj>lat))&&(lon<(xj-xi)*(lat-yi)/(yj-yi+Number.EPSILON)+xi);if(intersect)inside=!inside}return inside}
@@ -211,7 +212,7 @@ function renderDensity(){
   if(!currentData||!densityMap)return;
   const areaHa=analysisAreaHa();
   const selected=el.densityCategory?.value||'';
-  const rows=selected?currentData.stores.filter(s=>s.largeCategory===selected):currentData.stores;
+  const rows=selected?currentData.stores.filter(s=>categoryValue(s.largeCategory)===categoryValue(selected)):currentData.stores;
 
   el.densityArea.textContent=areaHa>0?areaHa.toLocaleString('ko-KR',{maximumFractionDigits:2}):'-';
   el.densityAll.textContent=areaHa>0?(currentData.total/areaHa).toLocaleString('ko-KR',{maximumFractionDigits:2}):'-';
@@ -267,7 +268,7 @@ function populateIndustryFilters(){
 function refreshMidCategoryOptions(preferred=''){
   if(!currentData||!el.midCategorySelect)return;
   const large=el.largeCategorySelect?.value||activeCategory||'';
-  const base=large?currentData.stores.filter(s=>s.largeCategory===large):[];
+  const base=large?currentData.stores.filter(s=>categoryValue(s.largeCategory)===categoryValue(large)):[];
   const counts=countBy(base,'midCategory');
   el.midCategorySelect.innerHTML='<option value="">전체 중분류</option>'+counts.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} (${x.count.toLocaleString()}개)</option>`).join('');
   el.midCategorySelect.disabled=!large;
@@ -278,7 +279,7 @@ function refreshSmallCategoryOptions(preferred=''){
   if(!currentData||!el.smallCategorySelect)return;
   const large=el.largeCategorySelect?.value||activeCategory||'';
   const mid=el.midCategorySelect?.value||activeMidCategory||'';
-  const base=(large&&mid)?currentData.stores.filter(s=>s.largeCategory===large&&s.midCategory===mid):[];
+  const base=(large&&mid)?currentData.stores.filter(s=>categoryValue(s.largeCategory)===categoryValue(large)&&categoryValue(s.midCategory)===categoryValue(mid)):[];
   const counts=countBy(base,'smallCategory');
   el.smallCategorySelect.innerHTML='<option value="">전체 소분류</option>'+counts.map(x=>`<option value="${esc(x.name)}">${esc(x.name)} (${x.count.toLocaleString()}개)</option>`).join('');
   el.smallCategorySelect.disabled=!(large&&mid);
@@ -300,9 +301,9 @@ function updateIndustryFilterStatus(){
   }
 }
 function applyIndustrySelection(large='',mid='',small=''){
-  activeCategory=large||null;
-  activeMidCategory=mid||null;
-  activeSmallCategory=small||null;
+  activeCategory=categoryValue(large)||null;
+  activeMidCategory=categoryValue(mid)||null;
+  activeSmallCategory=categoryValue(small)||null;
   if(el.largeCategorySelect)el.largeCategorySelect.value=activeCategory||'';
   refreshMidCategoryOptions(activeMidCategory||'');
   if(el.midCategorySelect&&activeMidCategory)el.midCategorySelect.value=activeMidCategory;
@@ -312,7 +313,7 @@ function applyIndustrySelection(large='',mid='',small=''){
   if(currentData)renderCounts(el.categoryList,currentData.countsLarge,true);
   updateIndustryFilterStatus();
 }
-function renderCounts(target,rows,clickable=false){if(!rows?.length){target.innerHTML='<div class="emptyCard">조회 결과 없음</div>';return}const max=Math.max(...rows.map(x=>x.count));target.innerHTML=rows.map(x=>{const c=colorOf(x.name),sel=clickable&&activeCategory===x.name?' selected':'';return `<button type="button" class="categoryRow${sel}" style="--category-color:${c}" ${clickable?`data-category="${esc(x.name)}"`:'disabled'}><span class="categoryMain"><span class="categoryName"><i class="categoryDot"></i>${esc(x.name)}</span><span class="bar"><i style="width:${Math.max(5,x.count/max*100)}%"></i></span></span><b>${x.count.toLocaleString()}개</b></button>`}).join('');if(clickable)target.querySelectorAll('[data-category]').forEach(b=>b.addEventListener('click',()=>{const clicked=b.dataset.category;if(activeCategory===clicked&&!activeMidCategory&&!activeSmallCategory)applyIndustrySelection('','','');else applyIndustrySelection(clicked,'','')}))}
+function renderCounts(target,rows,clickable=false){if(!rows?.length){target.innerHTML='<div class="emptyCard">조회 결과 없음</div>';return}const max=Math.max(...rows.map(x=>x.count));target.innerHTML=rows.map(x=>{const c=colorOf(x.name),sel=clickable&&activeCategory===x.name?' selected':'';return `<button type="button" class="categoryRow${sel}" style="--category-color:${c}" ${clickable?`data-category="${esc(x.name)}"`:'disabled'}><span class="categoryMain"><span class="categoryName"><i class="categoryDot"></i>${esc(x.name)}</span><span class="bar"><i style="width:${Math.max(5,x.count/max*100)}%"></i></span></span><b>${x.count.toLocaleString()}개</b></button>`}).join('');if(clickable)target.querySelectorAll('[data-category]').forEach(b=>b.addEventListener('click',()=>{const clicked=categoryValue(b.dataset.category);if(activeCategory===clicked&&!activeMidCategory&&!activeSmallCategory)applyIndustrySelection('','','');else applyIndustrySelection(clicked,'','')}))}
 function renderLegend(rows){if(legend){legend.remove();legend=null}if(!rows.length)return;legend=L.control({position:'bottomleft'});legend.onAdd=()=>{const d=L.DomUtil.create('div','mapLegend');d.innerHTML='<strong>업종 색상</strong>'+rows.slice(0,12).map(r=>`<div class="legendItem"><i style="background:${colorOf(r.name)}"></i><span>${esc(r.name)}</span></div>`).join('');L.DomEvent.disableClickPropagation(d);return d};legend.addTo(map)}
 function addMarker(s){
   const c=colorOf(s.largeCategory);
@@ -392,7 +393,19 @@ function drawRadius(data){
 }
 function drawPolygonResult(data,poly,searchRadius){currentData=data;activeCategory=null;activeMidCategory=null;activeSmallCategory=null;el.storeSearch.value='';buildColors(data.countsLarge);clearMapAnalysis();renderMapStores(data.stores||[]);renderLegend(data.countsLarge);if(polygonLayer)polygonLayer.setStyle({color:'#17324d',weight:3,fillOpacity:.08});map.fitBounds(L.latLngBounds(poly.map(p=>[p.lat,p.lng])),{padding:[22,22],animate:false});const area=polygonAreaMeters(poly);el.totalLabel.textContent='다각형 내 점포';el.areaLabel.textContent='다각형 면적';el.radiusKpi.textContent=area>=1e6?`${(area/1e6).toFixed(2)}㎢`:`${Math.round(area).toLocaleString()}㎡`;el.centerName.textContent=`검색반경 ${radiusText(searchRadius)}`;updateSummary(data)}
 function matches(s,t){if(!t)return true;return[s.name,s.branch,s.largeCategory,s.midCategory,s.smallCategory,s.address,s.lotAddress].join(' ').toLowerCase().includes(t.toLowerCase())}
-function filtered(){if(!currentData)return[];const t=el.storeSearch.value.trim();return currentData.stores.filter(s=>(!activeCategory||s.largeCategory===activeCategory)&&(!activeMidCategory||s.midCategory===activeMidCategory)&&(!activeSmallCategory||s.smallCategory===activeSmallCategory)&&matches(s,t))}
+function filtered(){
+  if(!currentData)return[];
+  const t=el.storeSearch.value.trim();
+  const large=categoryValue(activeCategory);
+  const mid=categoryValue(activeMidCategory);
+  const small=categoryValue(activeSmallCategory);
+  return currentData.stores.filter(s=>
+    (!large||categoryValue(s.largeCategory)===large)&&
+    (!mid||categoryValue(s.midCategory)===mid)&&
+    (!small||categoryValue(s.smallCategory)===small)&&
+    matches(s,t)
+  );
+}
 function renderStores(rows){const filterName=activeSmallCategory?`${activeCategory} > ${activeMidCategory} > ${activeSmallCategory}`:(activeMidCategory?`${activeCategory} > ${activeMidCategory}`:activeCategory);el.storeListCaption.textContent=filterName?`${filterName} ${rows.length.toLocaleString()}개 점포 표시 중`:`${rows.length.toLocaleString()}개 점포 표시 중`;if(!rows.length){el.storeList.innerHTML='<div class="emptyCard">조건에 맞는 점포가 없음</div>';return}el.storeList.innerHTML=rows.slice(0,500).map(s=>`<article class="storeItem"><div class="storeTop"><div class="storeName">${esc(s.name)}${s.branch?` <small>${esc(s.branch)}</small>`:''}</div><span class="storeCategory"><i class="categoryDot" style="background:${colorOf(s.largeCategory)}"></i>${esc(s.largeCategory)}</span></div><div class="storeMeta">${esc(s.midCategory)} · ${esc(s.smallCategory)}<br>${esc(s.address||s.lotAddress)}</div></article>`).join('')}
 function applyFilters(){
   const rows=filtered();
@@ -504,5 +517,5 @@ el.smallCategorySelect.addEventListener('change',()=>{
 });
 el.clearIndustryFilterBtn.addEventListener('click',()=>applyIndustrySelection('','',''));
 el.densityCategory.addEventListener('change',renderDensity);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=13').catch(()=>{});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=14').catch(()=>{});
 radiusSearch();
