@@ -21,8 +21,8 @@ const densityMap=L.map('densityMap',{preferCanvas:true,zoomControl:true,attribut
 L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty'}).addTo(densityMap);
 let densityGridLayer=null,densityBoundaryLayer=null;
 
-let analysisMode='radius',currentData=null,activeCategory=null,activeMidCategory=null,activeSmallCategory=null,selectedAddressPoint=null,locationPickMode=false,mapPickMarker=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={};
-const storeLayer=L.layerGroup().addTo(map),markers=[],drawnItems=new L.FeatureGroup().addTo(map);
+let analysisMode='radius',currentData=null,activeCategory=null,activeMidCategory=null,activeSmallCategory=null,selectedAddressPoint=null,locationPickMode=false,mapPickMarker=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={},lastMapRows=[];
+const storeLayer=L.layerGroup().addTo(map),labelLayer=L.layerGroup().addTo(map),markers=[],drawnItems=new L.FeatureGroup().addTo(map);
 const ids=['address','radiusPreset','radius','customRadiusWrap','searchBtn','exportBtn','installBtn','status','total','totalLabel','largeCount','topCategory','topCategoryCount','radiusKpi','areaLabel','centerName','categoryList','midCategoryList','resetFilterBtn','storeSearch','storeList','storeListCaption','radiusModeBtn','polygonModeBtn','radiusControls','polygonControls','polygonHelp','locateBtn','drawPolygonBtn','clearPolygonBtn','polygonSearchBtn','densityCategory','densityArea','densityAll','densitySelected','densitySelectedLabel','largeCategorySelect','midCategorySelect','smallCategorySelect','clearIndustryFilterBtn','industryFilterStatus','addressSearchBtn','mapPointBtn','addressSuggestions','selectedAddressInfo','industryQuickSearch','industryQuickResults'];
 const el=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
 const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -371,18 +371,73 @@ function addMarker(s){
   storeLayer.addLayer(m);
   return m;
 }
+function labelRules(){
+  const z=map.getZoom();
+  const selected=Boolean(activeCategory||activeMidCategory||activeSmallCategory||el.storeSearch.value.trim());
+  if(z<=10)return {max:selected?16:0,grid:150};
+  if(z===11)return {max:selected?30:12,grid:135};
+  if(z===12)return {max:selected?60:24,grid:120};
+  if(z===13)return {max:selected?110:45,grid:100};
+  if(z===14)return {max:selected?180:80,grid:85};
+  if(z===15)return {max:selected?300:130,grid:72};
+  if(z===16)return {max:selected?500:220,grid:62};
+  return {max:selected?900:350,grid:54};
+}
+function renderStoreLabels(rows=lastMapRows){
+  lastMapRows=Array.isArray(rows)?rows:[];
+  labelLayer.clearLayers();
+  if(!lastMapRows.length)return;
+
+  const {max,grid}=labelRules();
+  if(max<=0)return;
+
+  const bounds=map.getBounds().pad(-0.01);
+  const visible=lastMapRows.filter(s=>bounds.contains([s.lat,s.lon]));
+  if(!visible.length)return;
+
+  const center=map.getCenter();
+  visible.sort((a,b)=>{
+    const da=(a.lat-center.lat)**2+(a.lon-center.lng)**2;
+    const db=(b.lat-center.lat)**2+(b.lon-center.lng)**2;
+    return da-db;
+  });
+
+  const occupied=new Set();
+  let shown=0;
+  for(const s of visible){
+    if(shown>=max)break;
+    const p=map.latLngToContainerPoint([s.lat,s.lon]);
+    const key=Math.floor(p.x/grid)+'_'+Math.floor(p.y/grid);
+    if(occupied.has(key))continue;
+    occupied.add(key);
+
+    const color=colorOf(s.largeCategory);
+    const name=String(s.name||'상호 미상').trim();
+    const icon=L.divIcon({
+      className:'businessNameLabelWrap',
+      html:`<div class="businessNameLabel" style="--label-color:${color}"><i></i><span>${esc(name)}</span></div>`,
+      iconSize:null,
+      iconAnchor:[0,14]
+    });
+    L.marker([s.lat,s.lon],{icon,interactive:false,zIndexOffset:600}).addTo(labelLayer);
+    shown++;
+  }
+}
 function renderMapStores(rows){
+  lastMapRows=Array.isArray(rows)?rows:[];
   storeLayer.clearLayers();
+  labelLayer.clearLayers();
   markers.length=0;
   const selected=Boolean(activeCategory||activeMidCategory||activeSmallCategory||el.storeSearch.value.trim());
   const maxMarkers=selected?5000:3000;
   const source=rows.length>maxMarkers?rows.filter((_,i)=>i%Math.ceil(rows.length/maxMarkers)===0).slice(0,maxMarkers):rows;
   for(const s of source)addMarker(s);
+  renderStoreLabels(lastMapRows);
   if(selected&&rows.length<=5000){
     status(`${rows.length.toLocaleString()}개 선택 업종 점포를 지도와 목록에 표시 중`,'success');
   }
 }
-function clearMapAnalysis(){storeLayer.clearLayers();markers.length=0;if(radiusLayer){radiusLayer.remove();radiusLayer=null}if(centerLayer){centerLayer.remove();centerLayer=null}if(legend){legend.remove();legend=null}}
+function clearMapAnalysis(){storeLayer.clearLayers();labelLayer.clearLayers();lastMapRows=[];markers.length=0;if(radiusLayer){radiusLayer.remove();radiusLayer=null}if(centerLayer){centerLayer.remove();centerLayer=null}if(legend){legend.remove();legend=null}}
 function updateSummary(data){
   el.total.textContent=Number(data.total||0).toLocaleString();
   el.largeCount.textContent=(data.countsLarge||[]).length.toLocaleString();
@@ -566,5 +621,10 @@ el.smallCategorySelect.addEventListener('change',()=>{
 });
 el.clearIndustryFilterBtn.addEventListener('click',()=>applyIndustrySelection('','',''));
 el.densityCategory.addEventListener('change',renderDensity);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=15').catch(()=>{});
+let labelRefreshTimer=null;
+map.on('zoomend moveend',()=>{
+  clearTimeout(labelRefreshTimer);
+  labelRefreshTimer=setTimeout(()=>renderStoreLabels(lastMapRows),100);
+});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=16').catch(()=>{});
 radiusSearch();
