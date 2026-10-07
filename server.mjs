@@ -9,6 +9,7 @@ const PORT = Number(process.env.PORT || 3000);
 const SERVICE_KEY_RAW = String(process.env.PUBLIC_DATA_SERVICE_KEY || '').trim();
 const API_BASE = 'http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius';
 const RECT_API_BASE = 'http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRectangle';
+const POLYGON_API_BASE = 'http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInPolygon';
 const API_PAGE_SIZE = 1000;
 const API_MAX_RADIUS = 2000;
 const APP_MAX_RADIUS = 10000;
@@ -319,6 +320,56 @@ async function getPage(lat, lon, radius, pageNo) {
   return parsePayload(raw);
 }
 
+async function getPolygonPage(wkt, pageNo) {
+  const serviceKey = safeServiceKey();
+  if (!serviceKey) throw new Error('SERVICE_KEY_MISSING');
+  const url = new URL(POLYGON_API_BASE);
+  url.searchParams.set('ServiceKey', serviceKey);
+  url.searchParams.set('pageNo', String(pageNo));
+  url.searchParams.set('numOfRows', String(API_PAGE_SIZE));
+  url.searchParams.set('key', wkt);
+  url.searchParams.set('type', 'json');
+  let r;
+  try {
+    r = await fetch(url, { headers: { 'User-Agent': 'Sanggwon-Web-Analyzer/2.3' } });
+  } catch (e) {
+    throw new Error(`NETWORK_TO_PUBLIC_DATA_FAILED|${e.message}`);
+  }
+  const raw = await r.text();
+  if (!r.ok) {
+    const msg = extractApiError(raw, r.status);
+    if (r.status === 403) throw new Error(`PUBLIC_DATA_FORBIDDEN|${msg}`);
+    throw new Error(`PUBLIC_DATA_HTTP_ERROR|${r.status}|${msg}`);
+  }
+  return parsePayload(raw);
+}
+
+async function fetchAllInPolygon(wkt) {
+  const first = await getPolygonPage(wkt, 1);
+  const bodyPageSize = first.items.length > 0 ? first.items.length : API_PAGE_SIZE;
+  const pages = Math.max(1, Math.ceil(first.totalCount / Math.max(1, bodyPageSize)));
+  const raw = [...first.items];
+  for (let p=2; p<=pages; p++) {
+    const next = await getPolygonPage(wkt, p);
+    raw.push(...next.items);
+  }
+  return raw.map(normalizeStore).filter(Boolean);
+}
+
+function circleWkt(lat, lon, radius, segments=48) {
+  const pts = [];
+  const latScale = 111320;
+  const lonScale = 111320 * Math.cos(lat * Math.PI / 180);
+  for (let i=0; i<segments; i++) {
+    const a = 2 * Math.PI * i / segments;
+    const x = radius * Math.cos(a);
+    const y = radius * Math.sin(a);
+    pts.push(`${(lon + x/lonScale).toFixed(7)} ${(lat + y/latScale).toFixed(7)}`);
+  }
+  pts.push(pts[0]);
+  return `POLYGON ((${pts.join(',')}))`;
+}
+
 async function getRectanglePage(minx, miny, maxx, maxy, pageNo) {
   const serviceKey = safeServiceKey();
   if (!serviceKey) throw new Error('SERVICE_KEY_MISSING');
@@ -440,18 +491,10 @@ async function fetchStoresForRadius(lat, lon, radius) {
     return stores.filter(s => distanceMeters(lat, lon, s.lat, s.lon) <= radius + 3);
   }
 
-  // The public radius endpoint is limited to 2km.
-  // For larger trade areas, request the bounding rectangle once and
-  // then keep only stores whose actual distance from the center is inside the circle.
-  const latDelta = radius / 111320;
-  const cos = Math.cos(lat * Math.PI / 180);
-  const lonDelta = radius / (111320 * (Math.abs(cos) < 0.01 ? 0.01 : cos));
-  const minx = lon - lonDelta;
-  const maxx = lon + lonDelta;
-  const miny = lat - latDelta;
-  const maxy = lat + latDelta;
-
-  const stores = await fetchAllInRectangle(minx, miny, maxx, maxy);
+  // For 2~10km analysis, use the official polygon store endpoint.
+  // Approximate a circle with 48 vertices, then apply an exact distance filter.
+  const wkt = circleWkt(lat, lon, radius, 48);
+  const stores = await fetchAllInPolygon(wkt);
   const dedup = new Map();
   for (const s of stores) {
     if (distanceMeters(lat, lon, s.lat, s.lon) > radius + 3) continue;
@@ -530,7 +573,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return res.end();
   }
   if (url.pathname === '/api/health') {
-    return json(res, 200, { ok: true, version: 'web-2.2', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+    return json(res, 200, { ok: true, version: 'web-2.3', keyConfigured: Boolean(SERVICE_KEY_RAW) });
   }
   if (url.pathname === '/api/address-candidates') {
     const q = String(url.searchParams.get('q') || '').trim();
