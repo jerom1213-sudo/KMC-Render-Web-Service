@@ -491,21 +491,51 @@ async function fetchStoresForRadius(lat, lon, radius) {
     return stores.filter(s => distanceMeters(lat, lon, s.lat, s.lon) <= radius + 3);
   }
 
-  // For 2~10km analysis, use the official polygon store endpoint.
-  // Approximate a circle with 48 vertices, then apply an exact distance filter.
-  const wkt = circleWkt(lat, lon, radius, 48);
-  const stores = await fetchAllInPolygon(wkt);
-  const dedup = new Map();
-  for (const s of stores) {
-    if (distanceMeters(lat, lon, s.lat, s.lon) > radius + 3) continue;
-    const key = s.id || `${s.name}|${s.address}|${s.lat.toFixed(6)}|${s.lon.toFixed(6)}`;
-    if (!dedup.has(key)) dedup.set(key, s);
+  // 2~10km: tile the requested circle with overlapping official 2km-radius queries.
+  // This deliberately uses only storeListInRadius, which is the most reliable endpoint.
+  const tileRadius = 2000;
+  const step = 2700; // half diagonal ~= 1909m, so adjacent tiles overlap enough for full coverage
+  const extent = radius + tileRadius;
+  const n = Math.ceil(extent / step);
+  const centers = [];
+
+  for (let ix=-n; ix<=n; ix++) {
+    for (let iy=-n; iy<=n; iy++) {
+      const east = ix * step;
+      const north = iy * step;
+      const centerDistance = Math.hypot(east, north);
+      if (centerDistance > radius + tileRadius) continue;
+      centers.push(offsetPoint(lat, lon, east, north));
+    }
   }
-  return [...dedup.values()];
+
+  console.log(`[large-radius] radius=${radius}m centers=${centers.length}`);
+
+  const batches = await runLimited(centers, 4, async (p, i) => {
+    try {
+      return await fetchAllAtPoint(p.lat, p.lon, tileRadius);
+    } catch (e) {
+      console.warn(`[large-radius] tile ${i+1}/${centers.length} failed: ${e.message}`);
+      return [];
+    }
+  });
+
+  const dedup = new Map();
+  for (const stores of batches) {
+    for (const s of stores || []) {
+      if (distanceMeters(lat, lon, s.lat, s.lon) > radius + 3) continue;
+      const key = s.id || `${s.name}|${s.address}|${s.lat.toFixed(6)}|${s.lon.toFixed(6)}`;
+      if (!dedup.has(key)) dedup.set(key, s);
+    }
+  }
+
+  const result = [...dedup.values()];
+  console.log(`[large-radius] radius=${radius}m stores=${result.length}`);
+  return result;
 }
 
 async function analyze(address, radius) {
-  const cacheKey = `${address}__${radius}`;
+  const cacheKey = `v24__${address}__${radius}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL) return cached.data;
 
@@ -524,7 +554,7 @@ async function analyze(address, radius) {
 }
 
 async function analyzeCoord(lat, lon, radius, displayName='지도 선택 위치') {
-  const cacheKey = `coord__${lat.toFixed(6)}__${lon.toFixed(6)}__${radius}`;
+  const cacheKey = `v24_coord__${lat.toFixed(6)}__${lon.toFixed(6)}__${radius}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL) return cached.data;
 
@@ -573,7 +603,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return res.end();
   }
   if (url.pathname === '/api/health') {
-    return json(res, 200, { ok: true, version: 'web-2.3', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+    return json(res, 200, { ok: true, version: 'web-2.4', keyConfigured: Boolean(SERVICE_KEY_RAW) });
   }
   if (url.pathname === '/api/address-candidates') {
     const q = String(url.searchParams.get('q') || '').trim();
