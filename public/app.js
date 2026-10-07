@@ -21,9 +21,9 @@ const densityMap=L.map('densityMap',{preferCanvas:true,zoomControl:true,attribut
 L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty'}).addTo(densityMap);
 let densityGridLayer=null,densityBoundaryLayer=null;
 
-let analysisMode='radius',currentData=null,activeCategory=null,activeMidCategory=null,activeSmallCategory=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={};
+let analysisMode='radius',currentData=null,activeCategory=null,activeMidCategory=null,activeSmallCategory=null,selectedAddressPoint=null,locationPickMode=false,mapPickMarker=null,radiusLayer=null,centerLayer=null,polygonLayer=null,legend=null,deferredInstallPrompt=null,colorMap={};
 const storeLayer=L.layerGroup().addTo(map),markers=[],drawnItems=new L.FeatureGroup().addTo(map);
-const ids=['address','radiusPreset','radius','customRadiusWrap','searchBtn','exportBtn','installBtn','status','total','totalLabel','largeCount','topCategory','topCategoryCount','radiusKpi','areaLabel','centerName','categoryList','midCategoryList','resetFilterBtn','storeSearch','storeList','storeListCaption','radiusModeBtn','polygonModeBtn','radiusControls','polygonControls','polygonHelp','locateBtn','drawPolygonBtn','clearPolygonBtn','polygonSearchBtn','densityCategory','densityArea','densityAll','densitySelected','densitySelectedLabel','largeCategorySelect','midCategorySelect','smallCategorySelect','clearIndustryFilterBtn','industryFilterStatus'];
+const ids=['address','radiusPreset','radius','customRadiusWrap','searchBtn','exportBtn','installBtn','status','total','totalLabel','largeCount','topCategory','topCategoryCount','radiusKpi','areaLabel','centerName','categoryList','midCategoryList','resetFilterBtn','storeSearch','storeList','storeListCaption','radiusModeBtn','polygonModeBtn','radiusControls','polygonControls','polygonHelp','locateBtn','drawPolygonBtn','clearPolygonBtn','polygonSearchBtn','densityCategory','densityArea','densityAll','densitySelected','densitySelectedLabel','largeCategorySelect','midCategorySelect','smallCategorySelect','clearIndustryFilterBtn','industryFilterStatus','addressSearchBtn','mapPointBtn','addressSuggestions','selectedAddressInfo'];
 const el=Object.fromEntries(ids.map(id=>[id,document.getElementById(id)]));
 const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const radius=()=>el.radiusPreset.value==='custom'?Number(el.radius.value):Number(el.radiusPreset.value);
@@ -31,6 +31,79 @@ const radiusText=r=>r>=1000?`${(r/1000).toLocaleString('ko-KR',{maximumFractionD
 function status(msg,kind=''){el.status.textContent=msg;el.status.dataset.kind=kind}
 function buildColors(rows){colorMap={};rows.forEach((r,i)=>colorMap[r.name]=COLORS[i%COLORS.length])}
 const colorOf=n=>colorMap[n]||'#6d8398';
+function hideAddressSuggestions(){
+  if(!el.addressSuggestions)return;
+  el.addressSuggestions.classList.add('hidden');
+  el.addressSuggestions.innerHTML='';
+}
+function setSelectedAddressPoint(point, source='주소 선택'){
+  selectedAddressPoint={
+    lat:Number(point.lat),
+    lon:Number(point.lon),
+    displayName:String(point.displayName||el.address.value||'선택 위치')
+  };
+  el.address.value=selectedAddressPoint.displayName;
+  el.selectedAddressInfo.textContent=`${source}: ${selectedAddressPoint.displayName}`;
+  el.selectedAddressInfo.classList.add('active');
+  hideAddressSuggestions();
+  map.setView([selectedAddressPoint.lat,selectedAddressPoint.lon],16);
+  if(mapPickMarker)mapPickMarker.remove();
+  mapPickMarker=L.marker([selectedAddressPoint.lat,selectedAddressPoint.lon],{
+    icon:L.divIcon({className:'',html:'<div class="mapPickMarker"></div>',iconSize:[22,22],iconAnchor:[11,11]})
+  }).addTo(map).bindPopup(`<b>분석 중심점</b><br>${esc(selectedAddressPoint.displayName)}`);
+}
+async function searchAddressCandidates(){
+  const q=el.address.value.trim();
+  if(!q)return status('주소를 입력해야 함','error');
+  el.addressSearchBtn.disabled=true;
+  status('정확한 주소 후보를 검색 중…');
+  try{
+    const res=await fetch(`/api/address-candidates?q=${encodeURIComponent(q)}`,{cache:'no-store'});
+    const d=await res.json();
+    if(!res.ok)throw new Error(explain(d));
+    const items=Array.isArray(d.items)?d.items:[];
+    if(!items.length){
+      hideAddressSuggestions();
+      el.selectedAddressInfo.textContent='주소 후보를 찾지 못함. 「지도에서 위치 선택」으로 중심점을 직접 지정할 수 있음';
+      el.selectedAddressInfo.classList.remove('active');
+      return status('주소 후보 없음 · 지도에서 위치 선택 가능','error');
+    }
+    el.addressSuggestions.innerHTML=items.map((x,i)=>`<button type="button" class="addressSuggestion" data-index="${i}"><strong>${esc(x.displayName)}</strong><small>위도 ${Number(x.lat).toFixed(6)} · 경도 ${Number(x.lon).toFixed(6)}</small></button>`).join('');
+    el.addressSuggestions.classList.remove('hidden');
+    el.addressSuggestions.querySelectorAll('[data-index]').forEach(b=>b.addEventListener('click',()=>{
+      const x=items[Number(b.dataset.index)];
+      setSelectedAddressPoint(x,'주소 선택');
+      status('주소 선택 완료. 상권 조회를 실행하면 됨','success');
+    }));
+    status(`${items.length}개의 주소 후보를 찾았음. 정확한 주소를 선택해야 함`,'success');
+  }catch(e){
+    hideAddressSuggestions();
+    status(`주소 검색 오류: ${e.message}`,'error');
+  }finally{
+    el.addressSearchBtn.disabled=false;
+  }
+}
+function beginMapPointSelection(){
+  locationPickMode=true;
+  hideAddressSuggestions();
+  status('지도에서 분석 중심점을 한 번 클릭해야 함');
+  const mapEl=document.getElementById('map');
+  mapEl.style.cursor='crosshair';
+  mapEl.scrollIntoView({behavior:'smooth',block:'center'});
+}
+async function finishMapPointSelection(lat,lon){
+  locationPickMode=false;
+  document.getElementById('map').style.cursor='';
+  status('선택 위치의 주소를 확인 중…');
+  let displayName=`지도 선택 위치 ${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  try{
+    const r=await fetch(`/api/reverse-geocode?lat=${lat}&lon=${lon}`,{cache:'no-store'});
+    const d=await r.json();
+    if(r.ok&&d.displayName)displayName=d.displayName;
+  }catch{}
+  setSelectedAddressPoint({lat,lon,displayName},'지도 위치 선택');
+  status('지도에서 분석 중심점을 선택했음','success');
+}
 function countBy(stores,prop){const m=new Map();for(const s of stores){const n=String(s[prop]||'기타').trim()||'기타';m.set(n,(m.get(n)||0)+1)}return[...m].map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name,'ko'))}
 function haversine(a,b){const R=6371000,toRad=x=>x*Math.PI/180,dLat=toRad(b.lat-a.lat),dLon=toRad(b.lon-a.lon),la1=toRad(a.lat),la2=toRad(b.lat);const h=Math.sin(dLat/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.sqrt(h))}
 function polygonAreaMeters(points){if(points.length<3)return 0;const lat0=points.reduce((s,p)=>s+p.lat,0)/points.length*Math.PI/180,R=6371000;const xy=points.map(p=>({x:R*p.lng*Math.PI/180*Math.cos(lat0),y:R*p.lat*Math.PI/180}));let a=0;for(let i=0,j=xy.length-1;i<xy.length;j=i++)a+=(xy[j].x*xy[i].y-xy[i].x*xy[j].y);return Math.abs(a/2)}
@@ -46,7 +119,10 @@ function densityCellSizeMeters(){
   if(r<=500)return 40;
   if(r<=1000)return 55;
   if(r<=1500)return 65;
-  return 80;
+  if(r<=2000)return 80;
+  if(r<=3000)return 120;
+  if(r<=5000)return 180;
+  return 300;
 }
 function getDensityBounds(){
   if(currentData?.query?.mode==='polygon'&&polygonLayer)return polygonLayer.getBounds();
@@ -231,27 +307,104 @@ function renderLegend(rows){if(legend){legend.remove();legend=null}if(!rows.leng
 function addMarker(s){const c=colorOf(s.largeCategory);const m=L.circleMarker([s.lat,s.lon],{radius:5,weight:1.3,color:c,fillColor:c,fillOpacity:.84});m.bindPopup(`<b>${esc(s.name)}</b>${s.branch?` ${esc(s.branch)}`:''}<br>${esc(s.largeCategory)} &gt; ${esc(s.midCategory)} &gt; ${esc(s.smallCategory)}<br>${esc(s.address||s.lotAddress)}`);m.__store=s;markers.push(m);storeLayer.addLayer(m)}
 function clearMapAnalysis(){storeLayer.clearLayers();markers.length=0;if(radiusLayer){radiusLayer.remove();radiusLayer=null}if(centerLayer){centerLayer.remove();centerLayer=null}if(legend){legend.remove();legend=null}}
 function updateSummary(data){el.total.textContent=data.total.toLocaleString();el.largeCount.textContent=data.countsLarge.length.toLocaleString();if(data.countsLarge[0]){el.topCategory.textContent=data.countsLarge[0].name;el.topCategoryCount.textContent=`${data.countsLarge[0].count.toLocaleString()}개 · ${(data.countsLarge[0].count/Math.max(1,data.total)*100).toFixed(1)}%`}else{el.topCategory.textContent='-';el.topCategoryCount.textContent='-'}renderCounts(el.categoryList,data.countsLarge,true);renderCounts(el.midCategoryList,data.countsMid,false);renderStores(data.stores);el.storeSearch.disabled=false;el.exportBtn.disabled=false;populateIndustryFilters();updateIndustryFilterStatus();populateDensityCategories();renderDensity()}
-function drawRadius(data){currentData=data;activeCategory=null;activeMidCategory=null;activeSmallCategory=null;el.storeSearch.value='';buildColors(data.countsLarge);clearMapAnalysis();const p=[data.center.lat,data.center.lon];radiusLayer=L.circle(p,{radius:data.query.radius,weight:2.2,fillOpacity:.045}).addTo(map);centerLayer=L.marker(p,{icon:L.divIcon({className:'',html:'<div class="centerMarker"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).bindPopup(`<b>분석 기준점</b><br>${esc(data.center.displayName||data.query.address)}<br>반경 ${radiusText(data.query.radius)}`).addTo(map);data.stores.forEach(addMarker);renderLegend(data.countsLarge);map.fitBounds(radiusLayer.getBounds(),{padding:[18,18]});el.totalLabel.textContent='반경 내 점포';el.areaLabel.textContent='분석 반경';el.radiusKpi.textContent=radiusText(data.query.radius);el.centerName.textContent=data.query.address;updateSummary(data)}
-function drawPolygonResult(data,poly,searchRadius){currentData=data;activeCategory=null;activeMidCategory=null;el.storeSearch.value='';buildColors(data.countsLarge);clearMapAnalysis();data.stores.forEach(addMarker);renderLegend(data.countsLarge);if(polygonLayer)polygonLayer.setStyle({color:'#17324d',weight:3,fillOpacity:.08});map.fitBounds(L.latLngBounds(poly.map(p=>[p.lat,p.lng])),{padding:[22,22]});const area=polygonAreaMeters(poly);el.totalLabel.textContent='다각형 내 점포';el.areaLabel.textContent='다각형 면적';el.radiusKpi.textContent=area>=1e6?`${(area/1e6).toFixed(2)}㎢`:`${Math.round(area).toLocaleString()}㎡`;el.centerName.textContent=`검색반경 ${radiusText(searchRadius)}`;updateSummary(data)}
+function drawRadius(data){currentData=data;activeCategory=null;activeMidCategory=null;activeSmallCategory=null;el.storeSearch.value='';buildColors(data.countsLarge);clearMapAnalysis();const p=[data.center.lat,data.center.lon];radiusLayer=L.circle(p,{radius:data.query.radius,weight:2.2,fillOpacity:.045}).addTo(map);centerLayer=L.marker(p,{icon:L.divIcon({className:'',html:'<div class="centerMarker"></div>',iconSize:[20,20],iconAnchor:[10,10]})}).bindPopup(`<b>분석 기준점</b><br>${esc(data.center.displayName||data.query.address)}<br>반경 ${radiusText(data.query.radius)}`).addTo(map);data.stores.forEach(addMarker);renderLegend(data.countsLarge);map.fitBounds(radiusLayer.getBounds(),{padding:[18,18]});el.totalLabel.textContent='반경 내 점포';el.areaLabel.textContent='분석 반경';el.radiusKpi.textContent=radiusText(data.query.radius);el.centerName.textContent=data.center?.displayName||data.query.address||'선택 위치';updateSummary(data)}
+function drawPolygonResult(data,poly,searchRadius){currentData=data;activeCategory=null;activeMidCategory=null;activeSmallCategory=null;el.storeSearch.value='';buildColors(data.countsLarge);clearMapAnalysis();data.stores.forEach(addMarker);renderLegend(data.countsLarge);if(polygonLayer)polygonLayer.setStyle({color:'#17324d',weight:3,fillOpacity:.08});map.fitBounds(L.latLngBounds(poly.map(p=>[p.lat,p.lng])),{padding:[22,22]});const area=polygonAreaMeters(poly);el.totalLabel.textContent='다각형 내 점포';el.areaLabel.textContent='다각형 면적';el.radiusKpi.textContent=area>=1e6?`${(area/1e6).toFixed(2)}㎢`:`${Math.round(area).toLocaleString()}㎡`;el.centerName.textContent=`검색반경 ${radiusText(searchRadius)}`;updateSummary(data)}
 function matches(s,t){if(!t)return true;return[s.name,s.branch,s.largeCategory,s.midCategory,s.smallCategory,s.address,s.lotAddress].join(' ').toLowerCase().includes(t.toLowerCase())}
 function filtered(){if(!currentData)return[];const t=el.storeSearch.value.trim();return currentData.stores.filter(s=>(!activeCategory||s.largeCategory===activeCategory)&&(!activeMidCategory||s.midCategory===activeMidCategory)&&(!activeSmallCategory||s.smallCategory===activeSmallCategory)&&matches(s,t))}
 function renderStores(rows){const filterName=activeSmallCategory?`${activeCategory} > ${activeMidCategory} > ${activeSmallCategory}`:(activeMidCategory?`${activeCategory} > ${activeMidCategory}`:activeCategory);el.storeListCaption.textContent=filterName?`${filterName} ${rows.length.toLocaleString()}개 점포 표시 중`:`${rows.length.toLocaleString()}개 점포 표시 중`;if(!rows.length){el.storeList.innerHTML='<div class="emptyCard">조건에 맞는 점포가 없음</div>';return}el.storeList.innerHTML=rows.slice(0,500).map(s=>`<article class="storeItem"><div class="storeTop"><div class="storeName">${esc(s.name)}${s.branch?` <small>${esc(s.branch)}</small>`:''}</div><span class="storeCategory"><i class="categoryDot" style="background:${colorOf(s.largeCategory)}"></i>${esc(s.largeCategory)}</span></div><div class="storeMeta">${esc(s.midCategory)} · ${esc(s.smallCategory)}<br>${esc(s.address||s.lotAddress)}</div></article>`).join('')}
 function applyFilters(){const rows=filtered();storeLayer.clearLayers();for(const m of markers)if(rows.includes(m.__store))storeLayer.addLayer(m);renderStores(rows)}
 function explain(d){const c=d?.code,e=String(d?.error||'');if(c==='SERVICE_KEY_MISSING')return'백엔드 서버에 공공데이터 인증키가 설정되지 않음';if(c==='ADDRESS_GEOCODING_FAILED')return'주소 좌표를 찾지 못함. 지번 또는 도로명주소를 더 정확히 입력해야 함';if(c==='PUBLIC_DATA_FORBIDDEN')return'공공데이터 API 접근이 거부됨. 활용신청·인증키 상태를 확인해야 함';if(c==='NETWORK_TO_PUBLIC_DATA_FAILED')return'백엔드 서버에서 공공데이터포털에 연결하지 못함';if(c==='PUBLIC_DATA_API_ERROR'||c==='PUBLIC_DATA_HTTP_ERROR')return`공공데이터 API 오류임${e?`: ${e}`:''}`;return e||'조회 중 오류가 발생함'}
-async function radiusSearch(){const a=el.address.value.trim(),r=radius();if(!a)return status('주소를 입력해야 함','error');if(!Number.isFinite(r)||r<50||r>2000)return status('반경은 50m~2,000m로 입력해야 함','error');el.searchBtn.disabled=true;status('좌표 확인 및 점포 조회 중…');try{const q=new URLSearchParams({address:a,radius:String(r)}),res=await fetch(`/api/stores?${q}`,{cache:'no-store'}),d=await res.json();if(!res.ok)throw new Error(explain(d));drawRadius(d);status(`${d.total.toLocaleString()}개 점포 분석 완료`,'success')}catch(e){status(`오류: ${e.message}`,'error')}finally{el.searchBtn.disabled=false}}
-async function locateAddress(){const a=el.address.value.trim();if(!a)return status('주소를 입력해야 함','error');el.locateBtn.disabled=true;status('주소 좌표 확인 중…');try{const q=new URLSearchParams({address:a}),r=await fetch(`/api/geocode?${q}`,{cache:'no-store'}),d=await r.json();if(!r.ok)throw new Error(explain(d));map.setView([d.lat,d.lon],16);status('지도 이동 완료. 이제 다각형을 그려야 함','success')}catch(e){status(`오류: ${e.message}`,'error')}finally{el.locateBtn.disabled=false}}
+async function radiusSearch(){
+  const a=el.address.value.trim(),r=radius();
+  if(!a&&!selectedAddressPoint)return status('주소를 입력하거나 지도에서 위치를 선택해야 함','error');
+  if(!Number.isFinite(r)||r<50||r>10000)return status('반경은 50m~10,000m로 입력해야 함','error');
+  el.searchBtn.disabled=true;
+  status(r>2000?'넓은 상권을 조회 중임. 점포 수에 따라 시간이 더 걸릴 수 있음…':'좌표 확인 및 점포 조회 중…');
+  try{
+    let res,d;
+    if(selectedAddressPoint){
+      const q=new URLSearchParams({
+        lat:String(selectedAddressPoint.lat),
+        lon:String(selectedAddressPoint.lon),
+        radius:String(r),
+        displayName:selectedAddressPoint.displayName
+      });
+      res=await fetch(`/api/stores-coord?${q}`,{cache:'no-store'});
+      d=await res.json();
+      if(res.ok){
+        d.query={...(d.query||{}),address:selectedAddressPoint.displayName,radius:r};
+        d.center={...(d.center||{}),lat:selectedAddressPoint.lat,lon:selectedAddressPoint.lon,displayName:selectedAddressPoint.displayName};
+      }
+    }else{
+      const q=new URLSearchParams({address:a,radius:String(r)});
+      res=await fetch(`/api/stores?${q}`,{cache:'no-store'});
+      d=await res.json();
+    }
+    if(!res.ok)throw new Error(explain(d));
+    drawRadius(d);
+    status(`${d.total.toLocaleString()}개 점포 분석 완료`,'success');
+  }catch(e){
+    status(`오류: ${e.message} · 주소가 불확실하면 지도에서 위치를 선택할 수 있음`,'error');
+  }finally{
+    el.searchBtn.disabled=false;
+  }
+}
+
+async function locateAddress(){
+  if(selectedAddressPoint){
+    map.setView([selectedAddressPoint.lat,selectedAddressPoint.lon],16);
+    return status('선택된 중심점으로 지도 이동 완료. 이제 다각형을 그려야 함','success');
+  }
+  const a=el.address.value.trim();
+  if(!a)return status('주소를 입력하거나 지도에서 위치를 선택해야 함','error');
+  el.locateBtn.disabled=true;
+  status('주소 좌표 확인 중…');
+  try{
+    const q=new URLSearchParams({address:a}),r=await fetch(`/api/geocode?${q}`,{cache:'no-store'}),d=await r.json();
+    if(!r.ok)throw new Error(explain(d));
+    selectedAddressPoint={lat:Number(d.lat),lon:Number(d.lon),displayName:d.displayName||a};
+    el.selectedAddressInfo.textContent=`주소 확인: ${selectedAddressPoint.displayName}`;
+    el.selectedAddressInfo.classList.add('active');
+    map.setView([d.lat,d.lon],16);
+    status('지도 이동 완료. 이제 다각형을 그려야 함','success');
+  }catch(e){
+    status(`오류: ${e.message} · 지도에서 위치를 직접 선택할 수 있음`,'error');
+  }finally{
+    el.locateBtn.disabled=false;
+  }
+}
+
 const polygonDrawer=new L.Draw.Polygon(map,{allowIntersection:false,showArea:true,shapeOptions:{color:'#17324d',weight:3,fillOpacity:.08}});
 function startPolygonDraw(){if(polygonLayer){drawnItems.removeLayer(polygonLayer);polygonLayer=null}polygonDrawer.enable();status('지도에서 꼭짓점을 선택하고 마지막 점을 첫 점과 연결하거나 더블클릭하여 완료함')}
 function clearPolygon(){drawnItems.clearLayers();polygonLayer=null;el.polygonSearchBtn.disabled=true;status('다각형을 지웠음')}
+map.on('click',e=>{
+  if(!locationPickMode)return;
+  finishMapPointSelection(e.latlng.lat,e.latlng.lng);
+});
 map.on(L.Draw.Event.CREATED,e=>{drawnItems.clearLayers();polygonLayer=e.layer;drawnItems.addLayer(polygonLayer);el.polygonSearchBtn.disabled=false;const pts=polygonLayer.getLatLngs()[0];const area=polygonAreaMeters(pts);status(`다각형 설정 완료 · 면적 약 ${area>=1e6?(area/1e6).toFixed(2)+'㎢':Math.round(area).toLocaleString()+'㎡'}`,'success')});
-async function polygonSearch(){if(!polygonLayer)return status('먼저 다각형을 그려야 함','error');const poly=polygonLayer.getLatLngs()[0];if(poly.length<3)return status('다각형은 꼭짓점이 3개 이상이어야 함','error');const center=polygonCenter(poly);let searchRadius=Math.ceil(Math.max(...poly.map(p=>haversine(center,{lat:p.lat,lon:p.lng})))+100);if(searchRadius>2000)return status('다각형이 너무 큼. 공공데이터 조회 한계에 맞게 중심에서 2km 이내로 그려야 함','error');searchRadius=Math.max(100,searchRadius);el.polygonSearchBtn.disabled=true;status('다각형 주변 점포 조회 후 내부 점포를 선별 중…');try{const q=new URLSearchParams({lat:String(center.lat),lon:String(center.lon),radius:String(searchRadius)}),r=await fetch(`/api/stores-coord?${q}`,{cache:'no-store'}),raw=await r.json();if(!r.ok)throw new Error(explain(raw));const stores=raw.stores.filter(s=>pointInPolygon(s.lat,s.lon,poly));const data={query:{mode:'polygon',address:el.address.value.trim(),radius:searchRadius},center,stores,total:stores.length,countsLarge:countBy(stores,'largeCategory'),countsMid:countBy(stores,'midCategory')};drawPolygonResult(data,poly,searchRadius);status(`${stores.length.toLocaleString()}개 점포가 다각형 내부에 있음`,'success')}catch(e){status(`오류: ${e.message}`,'error')}finally{el.polygonSearchBtn.disabled=false}}
+async function polygonSearch(){if(!polygonLayer)return status('먼저 다각형을 그려야 함','error');const poly=polygonLayer.getLatLngs()[0];if(poly.length<3)return status('다각형은 꼭짓점이 3개 이상이어야 함','error');const center=polygonCenter(poly);let searchRadius=Math.ceil(Math.max(...poly.map(p=>haversine(center,{lat:p.lat,lon:p.lng})))+100);if(searchRadius>10000)return status('다각형이 너무 큼. 공공데이터 조회 한계에 맞게 중심에서 10km 이내로 그려야 함','error');searchRadius=Math.max(100,searchRadius);el.polygonSearchBtn.disabled=true;status('다각형 주변 점포 조회 후 내부 점포를 선별 중…');try{const q=new URLSearchParams({lat:String(center.lat),lon:String(center.lon),radius:String(searchRadius)}),r=await fetch(`/api/stores-coord?${q}`,{cache:'no-store'}),raw=await r.json();if(!r.ok)throw new Error(explain(raw));const stores=raw.stores.filter(s=>pointInPolygon(s.lat,s.lon,poly));const data={query:{mode:'polygon',address:el.address.value.trim(),radius:searchRadius},center,stores,total:stores.length,countsLarge:countBy(stores,'largeCategory'),countsMid:countBy(stores,'midCategory')};drawPolygonResult(data,poly,searchRadius);status(`${stores.length.toLocaleString()}개 점포가 다각형 내부에 있음`,'success')}catch(e){status(`오류: ${e.message}`,'error')}finally{el.polygonSearchBtn.disabled=false}}
 function setMode(mode){analysisMode=mode;const poly=mode==='polygon';el.radiusModeBtn.classList.toggle('active',!poly);el.polygonModeBtn.classList.toggle('active',poly);el.radiusControls.classList.toggle('hidden',poly);el.polygonControls.classList.toggle('hidden',!poly);el.polygonHelp.classList.toggle('hidden',!poly);status(poly?'다각형 분석 모드임. 주소로 이동 후 영역을 그려야 함':'반경 분석 모드임');}
 function csvCell(v){return `"${String(v??'').replaceAll('"','""')}"`}
 function exportCsv(){if(!currentData)return;const rows=filtered(),h=['상가업소번호','상호','지점명','업종대분류','업종중분류','업종소분류','도로명주소','지번주소','위도','경도'],b=rows.map(s=>[s.id,s.name,s.branch,s.largeCategory,s.midCategory,s.smallCategory,s.address,s.lotAddress,s.lat,s.lon]);const csv='\uFEFF'+[h,...b].map(r=>r.map(csvCell).join(',')).join('\r\n'),blob=new Blob([csv],{type:'text/csv;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`상권분석_${(currentData.query.address||analysisMode).replace(/[\\/:*?"<>|]/g,'_')}_${analysisMode}.csv`;a.click();URL.revokeObjectURL(a.href)}
 el.radiusPreset.addEventListener('change',()=>{const c=el.radiusPreset.value==='custom';el.customRadiusWrap.classList.toggle('hidden',!c);if(!c)el.radius.value=el.radiusPreset.value});
 el.radiusModeBtn.addEventListener('click',()=>setMode('radius'));el.polygonModeBtn.addEventListener('click',()=>setMode('polygon'));
+el.addressSearchBtn.addEventListener('click',searchAddressCandidates);
+el.mapPointBtn.addEventListener('click',beginMapPointSelection);
 el.searchBtn.addEventListener('click',radiusSearch);el.locateBtn.addEventListener('click',locateAddress);el.drawPolygonBtn.addEventListener('click',startPolygonDraw);el.clearPolygonBtn.addEventListener('click',clearPolygon);el.polygonSearchBtn.addEventListener('click',polygonSearch);
-el.resetFilterBtn.addEventListener('click',()=>{el.storeSearch.value='';applyIndustrySelection('','','')});el.storeSearch.addEventListener('input',applyFilters);el.exportBtn.addEventListener('click',exportCsv);el.address.addEventListener('keydown',e=>{if(e.key==='Enter'){analysisMode==='radius'?radiusSearch():locateAddress()}});
+el.resetFilterBtn.addEventListener('click',()=>{el.storeSearch.value='';applyIndustrySelection('','','')});el.storeSearch.addEventListener('input',applyFilters);el.exportBtn.addEventListener('click',exportCsv);el.address.addEventListener('input',()=>{
+  if(selectedAddressPoint&&el.address.value.trim()!==selectedAddressPoint.displayName){
+    selectedAddressPoint=null;
+    el.selectedAddressInfo.textContent='주소가 변경됨. 「주소 검색」으로 정확한 후보를 선택하거나 그대로 조회할 수 있음';
+    el.selectedAddressInfo.classList.remove('active');
+    if(mapPickMarker){mapPickMarker.remove();mapPickMarker=null}
+  }
+});
+el.address.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){
+    e.preventDefault();
+    searchAddressCandidates();
+  }
+});
 el.largeCategorySelect.addEventListener('change',()=>{
   const large=el.largeCategorySelect.value;
   applyIndustrySelection(large,'','');
@@ -269,5 +422,5 @@ el.smallCategorySelect.addEventListener('change',()=>{
 });
 el.clearIndustryFilterBtn.addEventListener('click',()=>applyIndustrySelection('','',''));
 el.densityCategory.addEventListener('change',renderDensity);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=9').catch(()=>{});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=10').catch(()=>{});
 radiusSearch();
