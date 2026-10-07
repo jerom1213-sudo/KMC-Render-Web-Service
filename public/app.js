@@ -374,53 +374,50 @@ function addMarker(s){
 function labelRules(){
   const z=map.getZoom();
   const selected=Boolean(activeCategory||activeMidCategory||activeSmallCategory||el.storeSearch.value.trim());
-  if(z<=10)return {max:selected?16:0,grid:150};
-  if(z===11)return {max:selected?30:12,grid:135};
-  if(z===12)return {max:selected?60:24,grid:120};
-  if(z===13)return {max:selected?110:45,grid:100};
-  if(z===14)return {max:selected?180:80,grid:85};
-  if(z===15)return {max:selected?300:130,grid:72};
-  if(z===16)return {max:selected?500:220,grid:62};
-  return {max:selected?900:350,grid:54};
+
+  // Smaller text at wide-area zooms; selected industries can show more labels.
+  let fontSize=8;
+  if(z>=14)fontSize=9;
+  if(z>=16)fontSize=10;
+
+  return {
+    fontSize,
+    max:selected?10000:5000
+  };
 }
 function renderStoreLabels(rows=lastMapRows){
   lastMapRows=Array.isArray(rows)?rows:[];
   labelLayer.clearLayers();
   if(!lastMapRows.length)return;
 
-  const {max,grid}=labelRules();
-  if(max<=0)return;
-
-  const bounds=map.getBounds().pad(-0.01);
+  const {fontSize,max}=labelRules();
+  const bounds=map.getBounds().pad(0.03);
   const visible=lastMapRows.filter(s=>bounds.contains([s.lat,s.lon]));
   if(!visible.length)return;
 
-  const center=map.getCenter();
-  visible.sort((a,b)=>{
-    const da=(a.lat-center.lat)**2+(a.lon-center.lng)**2;
-    const db=(b.lat-center.lat)**2+(b.lon-center.lng)**2;
-    return da-db;
-  });
-
-  const occupied=new Set();
-  let shown=0;
-  for(const s of visible){
-    if(shown>=max)break;
-    const p=map.latLngToContainerPoint([s.lat,s.lon]);
-    const key=Math.floor(p.x/grid)+'_'+Math.floor(p.y/grid);
-    if(occupied.has(key))continue;
-    occupied.add(key);
-
+  const source=visible.slice(0,max);
+  for(const s of source){
     const color=colorOf(s.largeCategory);
     const name=String(s.name||'상호 미상').trim();
+    const safeName=esc(name);
+
     const icon=L.divIcon({
       className:'businessNameLabelWrap',
-      html:`<div class="businessNameLabel" style="--label-color:${color}"><i></i><span>${esc(name)}</span></div>`,
-      iconSize:null,
-      iconAnchor:[0,14]
+      html:`<div class="businessNameLabel" style="--label-color:${color};--label-font-size:${fontSize}px"><i></i><span>${safeName}</span></div>`,
+      iconSize:[220,18],
+      iconAnchor:[-7,9]
     });
-    L.marker([s.lat,s.lon],{icon,interactive:false,zIndexOffset:600}).addTo(labelLayer);
-    shown++;
+
+    L.marker([s.lat,s.lon],{
+      icon,
+      interactive:false,
+      keyboard:false,
+      zIndexOffset:600
+    }).addTo(labelLayer);
+  }
+
+  if(visible.length>max){
+    status(`현재 화면 내 사업체 ${visible.length.toLocaleString()}개 중 ${max.toLocaleString()}개 상호명 표시 중 · 지도를 확대하면 전체 확인 가능`,'success');
   }
 }
 function renderMapStores(rows){
@@ -626,5 +623,5 @@ map.on('zoomend moveend',()=>{
   clearTimeout(labelRefreshTimer);
   labelRefreshTimer=setTimeout(()=>renderStoreLabels(lastMapRows),100);
 });
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=16').catch(()=>{});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;el.installBtn.classList.remove('hidden')});el.installBtn.addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;el.installBtn.classList.add('hidden')});window.addEventListener('appinstalled',()=>el.installBtn.classList.add('hidden'));if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js?v=17').catch(()=>{});
 radiusSearch();
