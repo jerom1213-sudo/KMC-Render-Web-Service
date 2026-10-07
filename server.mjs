@@ -8,6 +8,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);
 const SERVICE_KEY_RAW = String(process.env.PUBLIC_DATA_SERVICE_KEY || '').trim();
 const API_BASE = 'http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius';
+const RECT_API_BASE = 'http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRectangle';
 const API_PAGE_SIZE = 1000;
 const API_MAX_RADIUS = 2000;
 const APP_MAX_RADIUS = 10000;
@@ -318,6 +319,47 @@ async function getPage(lat, lon, radius, pageNo) {
   return parsePayload(raw);
 }
 
+async function getRectanglePage(minx, miny, maxx, maxy, pageNo) {
+  const serviceKey = safeServiceKey();
+  if (!serviceKey) throw new Error('SERVICE_KEY_MISSING');
+  const url = new URL(RECT_API_BASE);
+  url.searchParams.set('ServiceKey', serviceKey);
+  url.searchParams.set('pageNo', String(pageNo));
+  url.searchParams.set('numOfRows', String(API_PAGE_SIZE));
+  url.searchParams.set('minx', String(minx));
+  url.searchParams.set('miny', String(miny));
+  url.searchParams.set('maxx', String(maxx));
+  url.searchParams.set('maxy', String(maxy));
+  url.searchParams.set('type', 'json');
+  let r;
+  try {
+    r = await fetch(url, { headers: { 'User-Agent': 'Sanggwon-Web-Analyzer/2.2' } });
+  } catch (e) {
+    throw new Error(`NETWORK_TO_PUBLIC_DATA_FAILED|${e.message}`);
+  }
+  const raw = await r.text();
+  if (!r.ok) {
+    const msg = extractApiError(raw, r.status);
+    if (r.status === 403) throw new Error(`PUBLIC_DATA_FORBIDDEN|${msg}`);
+    throw new Error(`PUBLIC_DATA_HTTP_ERROR|${r.status}|${msg}`);
+  }
+  return parsePayload(raw);
+}
+
+async function fetchAllInRectangle(minx, miny, maxx, maxy) {
+  const first = await getRectanglePage(minx, miny, maxx, maxy, 1);
+  const effectivePageSize = first.items.length > 0 && first.totalCount > first.items.length
+    ? first.items.length
+    : API_PAGE_SIZE;
+  const pages = Math.max(1, Math.ceil(first.totalCount / Math.max(1, effectivePageSize)));
+  const raw = [...first.items];
+  for (let p=2; p<=pages; p++) {
+    const next = await getRectanglePage(minx, miny, maxx, maxy, p);
+    raw.push(...next.items);
+  }
+  return raw.map(normalizeStore).filter(Boolean);
+}
+
 function normalizeStore(x) {
   const lat = Number(x.lat);
   const lon = Number(x.lon);
@@ -366,7 +408,10 @@ function offsetPoint(lat, lon, eastMeters, northMeters) {
 
 async function fetchAllAtPoint(lat, lon, radius) {
   const first = await getPage(lat, lon, radius, 1);
-  const pages = Math.max(1, Math.ceil(first.totalCount / API_PAGE_SIZE));
+  const effectivePageSize = first.items.length > 0 && first.totalCount > first.items.length
+    ? first.items.length
+    : API_PAGE_SIZE;
+  const pages = Math.max(1, Math.ceil(first.totalCount / Math.max(1, effectivePageSize)));
   const raw = [...first.items];
   for (let p=2; p<=pages; p++) {
     const next = await getPage(lat, lon, radius, p);
@@ -395,25 +440,23 @@ async function fetchStoresForRadius(lat, lon, radius) {
     return stores.filter(s => distanceMeters(lat, lon, s.lat, s.lon) <= radius + 3);
   }
 
-  const n = Math.ceil(radius / TILE_STEP);
-  const centers = [];
-  for (let ix=-n; ix<=n; ix++) {
-    for (let iy=-n; iy<=n; iy++) {
-      const east = ix * TILE_STEP;
-      const north = iy * TILE_STEP;
-      if (Math.hypot(east, north) > radius + TILE_RADIUS) continue;
-      centers.push(offsetPoint(lat, lon, east, north));
-    }
-  }
+  // The public radius endpoint is limited to 2km.
+  // For larger trade areas, request the bounding rectangle once and
+  // then keep only stores whose actual distance from the center is inside the circle.
+  const latDelta = radius / 111320;
+  const cos = Math.cos(lat * Math.PI / 180);
+  const lonDelta = radius / (111320 * (Math.abs(cos) < 0.01 ? 0.01 : cos));
+  const minx = lon - lonDelta;
+  const maxx = lon + lonDelta;
+  const miny = lat - latDelta;
+  const maxy = lat + latDelta;
 
-  const batches = await runLimited(centers, 3, p => fetchAllAtPoint(p.lat, p.lon, TILE_RADIUS));
+  const stores = await fetchAllInRectangle(minx, miny, maxx, maxy);
   const dedup = new Map();
-  for (const stores of batches) {
-    for (const s of stores || []) {
-      if (distanceMeters(lat, lon, s.lat, s.lon) > radius + 3) continue;
-      const key = s.id || `${s.name}|${s.address}|${s.lat.toFixed(6)}|${s.lon.toFixed(6)}`;
-      if (!dedup.has(key)) dedup.set(key, s);
-    }
+  for (const s of stores) {
+    if (distanceMeters(lat, lon, s.lat, s.lon) > radius + 3) continue;
+    const key = s.id || `${s.name}|${s.address}|${s.lat.toFixed(6)}|${s.lon.toFixed(6)}`;
+    if (!dedup.has(key)) dedup.set(key, s);
   }
   return [...dedup.values()];
 }
