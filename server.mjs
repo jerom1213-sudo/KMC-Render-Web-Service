@@ -8,6 +8,11 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = Number(process.env.PORT || 3000);
 const SERVICE_KEY_RAW = String(process.env.PUBLIC_DATA_SERVICE_KEY || '').trim();
 const API_BASE = 'http://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius';
+const API_PAGE_SIZE = 1000;
+const API_MAX_RADIUS = 2000;
+const APP_MAX_RADIUS = 10000;
+const TILE_RADIUS = 1900;
+const TILE_STEP = 2500;
 const CACHE_TTL = 5 * 60 * 1000;
 const cache = new Map();
 
@@ -191,6 +196,71 @@ async function geocode(address) {
   throw new Error('ADDRESS_GEOCODING_FAILED');
 }
 
+async function addressCandidates(address) {
+  const normalized = normalizeKoreanAddressText(address);
+  if (!normalized) return [];
+
+  const collected = [];
+  const seen = new Set();
+  const push = (arr) => {
+    for (const item of arr || []) {
+      const lat = Number(item.lat), lon = Number(item.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      const key = `${lat.toFixed(6)}|${lon.toFixed(6)}|${item.display_name || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      collected.push({
+        lat,
+        lon,
+        displayName: item.display_name || normalized,
+        type: item.type || '',
+        importance: Number(item.importance || 0)
+      });
+    }
+  };
+
+  push(await nominatimSearch(`${normalized}, 대한민국`, 7));
+  push(await nominatimSearch(normalized, 7));
+
+  const tokens = normalized.split(' ');
+  const localityToken = tokens.find(t => /(읍|면|동|리)$/.test(t));
+  if (localityToken && collected.length < 5) {
+    const localities = await nominatimSearch(`${localityToken}, 대한민국`, 10);
+    for (const loc of localities.slice(0, 5)) {
+      const expanded = buildExpandedAddressFromLocality(normalized, loc, localityToken);
+      push(await nominatimSearch(expanded, 5));
+      if (collected.length >= 7) break;
+    }
+  }
+
+  return collected
+    .sort((a,b) => b.importance - a.importance)
+    .slice(0, 7);
+}
+
+async function reverseGeocode(lat, lon) {
+  const url = new URL('https://nominatim.openstreetmap.org/reverse');
+  url.searchParams.set('lat', String(lat));
+  url.searchParams.set('lon', String(lon));
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('zoom', '18');
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('accept-language', 'ko');
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'User-Agent': 'Sanggwon-Web-Analyzer/2.2 (+https://sanggwon-mobile-api.onrender.com)',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.5'
+      }
+    });
+    if (!r.ok) return { lat, lon, displayName: `지도 선택 위치 ${lat.toFixed(6)}, ${lon.toFixed(6)}` };
+    const obj = await r.json();
+    return { lat, lon, displayName: obj?.display_name || `지도 선택 위치 ${lat.toFixed(6)}, ${lon.toFixed(6)}` };
+  } catch {
+    return { lat, lon, displayName: `지도 선택 위치 ${lat.toFixed(6)}, ${lon.toFixed(6)}` };
+  }
+}
+
 function extractApiError(raw, status) {
   const s = String(raw || '').trim();
   if (!s) return `HTTP ${status}`;
@@ -228,7 +298,7 @@ async function getPage(lat, lon, radius, pageNo) {
   const url = new URL(API_BASE);
   url.searchParams.set('ServiceKey', serviceKey);
   url.searchParams.set('pageNo', String(pageNo));
-  url.searchParams.set('numOfRows', '100');
+  url.searchParams.set('numOfRows', String(API_PAGE_SIZE));
   url.searchParams.set('radius', String(radius));
   url.searchParams.set('cx', String(lon));
   url.searchParams.set('cy', String(lat));
@@ -278,20 +348,83 @@ function countBy(stores, prop) {
     .sort((a,b) => b.count - a.count || a.name.localeCompare(b.name, 'ko'));
 }
 
+function distanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+  const a = Math.sin(dLat/2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function offsetPoint(lat, lon, eastMeters, northMeters) {
+  const dLat = northMeters / 111320;
+  const cos = Math.cos(lat * Math.PI / 180);
+  const dLon = eastMeters / (111320 * (Math.abs(cos) < 0.01 ? 0.01 : cos));
+  return { lat: lat + dLat, lon: lon + dLon };
+}
+
+async function fetchAllAtPoint(lat, lon, radius) {
+  const first = await getPage(lat, lon, radius, 1);
+  const pages = Math.max(1, Math.ceil(first.totalCount / API_PAGE_SIZE));
+  const raw = [...first.items];
+  for (let p=2; p<=pages; p++) {
+    const next = await getPage(lat, lon, radius, p);
+    raw.push(...next.items);
+  }
+  return raw.map(normalizeStore).filter(Boolean);
+}
+
+async function runLimited(items, limit, worker) {
+  const out = new Array(items.length);
+  let index = 0;
+  async function runner() {
+    while (true) {
+      const i = index++;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(limit, items.length)}, () => runner()));
+  return out;
+}
+
+async function fetchStoresForRadius(lat, lon, radius) {
+  if (radius <= API_MAX_RADIUS) {
+    const stores = await fetchAllAtPoint(lat, lon, radius);
+    return stores.filter(s => distanceMeters(lat, lon, s.lat, s.lon) <= radius + 3);
+  }
+
+  const n = Math.ceil(radius / TILE_STEP);
+  const centers = [];
+  for (let ix=-n; ix<=n; ix++) {
+    for (let iy=-n; iy<=n; iy++) {
+      const east = ix * TILE_STEP;
+      const north = iy * TILE_STEP;
+      if (Math.hypot(east, north) > radius + TILE_RADIUS) continue;
+      centers.push(offsetPoint(lat, lon, east, north));
+    }
+  }
+
+  const batches = await runLimited(centers, 3, p => fetchAllAtPoint(p.lat, p.lon, TILE_RADIUS));
+  const dedup = new Map();
+  for (const stores of batches) {
+    for (const s of stores || []) {
+      if (distanceMeters(lat, lon, s.lat, s.lon) > radius + 3) continue;
+      const key = s.id || `${s.name}|${s.address}|${s.lat.toFixed(6)}|${s.lon.toFixed(6)}`;
+      if (!dedup.has(key)) dedup.set(key, s);
+    }
+  }
+  return [...dedup.values()];
+}
+
 async function analyze(address, radius) {
   const cacheKey = `${address}__${radius}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL) return cached.data;
 
   const center = await geocode(address);
-  const first = await getPage(center.lat, center.lon, radius, 1);
-  const pages = Math.max(1, Math.ceil(first.totalCount / 100));
-  const raw = [...first.items];
-  for (let p=2; p<=pages; p++) {
-    const next = await getPage(center.lat, center.lon, radius, p);
-    raw.push(...next.items);
-  }
-  const stores = raw.map(normalizeStore).filter(Boolean);
+  const stores = await fetchStoresForRadius(center.lat, center.lon, radius);
   const data = {
     query: { address, radius },
     center,
@@ -304,22 +437,15 @@ async function analyze(address, radius) {
   return data;
 }
 
-async function analyzeCoord(lat, lon, radius) {
+async function analyzeCoord(lat, lon, radius, displayName='지도 선택 위치') {
   const cacheKey = `coord__${lat.toFixed(6)}__${lon.toFixed(6)}__${radius}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL) return cached.data;
 
-  const first = await getPage(lat, lon, radius, 1);
-  const pages = Math.max(1, Math.ceil(first.totalCount / 100));
-  const raw = [...first.items];
-  for (let p=2; p<=pages; p++) {
-    const next = await getPage(lat, lon, radius, p);
-    raw.push(...next.items);
-  }
-  const stores = raw.map(normalizeStore).filter(Boolean);
+  const stores = await fetchStoresForRadius(lat, lon, radius);
   const data = {
     query: { mode: 'coord', radius },
-    center: { lat, lon, displayName: '다각형 검색 중심점' },
+    center: { lat, lon, displayName },
     total: stores.length,
     countsLarge: countBy(stores, 'largeCategory'),
     countsMid: countBy(stores, 'midCategory'),
@@ -361,7 +487,19 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,OPTIONS','Access-Control-Allow-Headers':'Content-Type'}); return res.end();
   }
   if (url.pathname === '/api/health') {
-    return json(res, 200, { ok: true, version: 'web-2.1', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+    return json(res, 200, { ok: true, version: 'web-2.2', keyConfigured: Boolean(SERVICE_KEY_RAW) });
+  }
+  if (url.pathname === '/api/address-candidates') {
+    const q = String(url.searchParams.get('q') || '').trim();
+    if (!q) return json(res, 400, { code:'ADDRESS_REQUIRED', error:'주소를 입력해야 함' });
+    const items = await addressCandidates(q);
+    return json(res, 200, { items });
+  }
+  if (url.pathname === '/api/reverse-geocode') {
+    const lat = Number(url.searchParams.get('lat'));
+    const lon = Number(url.searchParams.get('lon'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return json(res, 400, { code:'COORD_INVALID', error:'좌표가 올바르지 않음' });
+    return json(res, 200, await reverseGeocode(lat, lon));
   }
   if (url.pathname === '/api/geocode') {
     const address = String(url.searchParams.get('address') || '').trim();
@@ -381,11 +519,12 @@ const server = http.createServer(async (req, res) => {
     if (!Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) {
       return json(res, 400, { code:'COORD_INVALID', error:'위도·경도 값이 올바르지 않음' });
     }
-    if (!Number.isFinite(radius) || radius < 50 || radius > 2000) {
-      return json(res, 400, { code:'RADIUS_INVALID', error:'반경은 50~2000m 범위여야 함' });
+    if (!Number.isFinite(radius) || radius < 50 || radius > APP_MAX_RADIUS) {
+      return json(res, 400, { code:'RADIUS_INVALID', error:'반경은 50m~10km 범위여야 함' });
     }
     try {
-      const data = await analyzeCoord(lat, lon, Math.round(radius));
+      const displayName = String(url.searchParams.get('displayName') || '지도 선택 위치');
+      const data = await analyzeCoord(lat, lon, Math.round(radius), displayName);
       return json(res, 200, data);
     } catch (e) {
       const mapped = mapError(e);
